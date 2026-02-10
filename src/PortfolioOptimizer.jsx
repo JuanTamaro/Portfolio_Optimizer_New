@@ -235,7 +235,7 @@ export default function App() {
   const updMember = (id, field, val) => setMembers(p => p.map(m => m.id === id ? { ...m, [field]: val } : m));
   const removeMember = id => { if (members.length <= 1) return; setMembers(p => p.filter(m => m.id !== id).map(m => m.parentId === id ? { ...m, parentId: null, inheritPct: 0 } : m)); if (activeMemberId === id) setActiveMemberId(members[0].id) };
   const moveMember = (idx, dir) => { const ni = idx + dir; if (ni < 0 || ni >= members.length) return; setMembers(p => { const nm = [...p]; const tmp = nm[idx]; nm[idx] = nm[ni]; nm[ni] = tmp; return nm }) };
-  const handleFC = e => { if (!frontier || !svgRef.current) return; const rect = svgRef.current.getBoundingClientRect(); const sx = 700 / rect.width, sy = 400 / rect.height; const cx = (e.clientX - rect.left) * sx, cy = (e.clientY - rect.top) * sy; const cv = ((cx - 60) / 620) * 30, cr = ((370 - cy) / 340) * 22; if (cv < 0 || cv > 30 || cr < 0 || cr > 22) return; let best = null, bd = Infinity; for (const p of frontier.frontier) { const d = Math.sqrt(((p.vol - cv) / 30) ** 2 + ((p.ret - cr) / 22) ** 2); if (d < bd) { bd = d; best = p } } if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) } };
+  const handleFC = e => { if (!frontier || !svgRef.current) return; const rect = svgRef.current.getBoundingClientRect(); const sx = 700 / rect.width, sy = 400 / rect.height; const cx = (e.clientX - rect.left) * sx, cy = (e.clientY - rect.top) * sy; const cv = ((cx - 60) / 620) * 30, cr = ((370 - cy) / 340) * 22; if (cv < 0 || cv > 30 || cr < 0 || cr > 22) return; let best = null, bd = Infinity; for (const p of frontier.points) { const d = Math.sqrt(((p.vol - cv) / 30) ** 2 + ((p.ret - cr) / 22) ** 2); if (d < bd) { bd = d; best = p } } if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) } };
 
   const box = { background: "#161B22", border: "1px solid #21262D", borderRadius: 10, padding: 20 };
   const micro = { fontSize: 10, color: "#484F58", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase", letterSpacing: 1 };
@@ -562,7 +562,7 @@ export default function App() {
       <span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 600 }}>Selected:</span>
       <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#3FB950" }}>Ret {selPt.ret.toFixed(1)}%</span>
       <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>Vol {selPt.vol.toFixed(1)}%</span>
-      <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#8B949E" }}>VaR5: {selPt.var5.toFixed(1)}%</span>
+      <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#8B949E" }}>VaR5: {(selPt.ret - 1.645 * selPt.vol).toFixed(1)}%</span>
       <div style={{ width: "100%", display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
         {assets.map((ac, i) => { const pct = (selPt.weights[i] || 0) * 100; return pct > 0.5 ? (
           <span key={ac.id} style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: 4 }}>
