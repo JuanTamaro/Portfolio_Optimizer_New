@@ -126,6 +126,7 @@ export default function App() {
     { id: "padre", name: "Padre", portfolioId: null, value: 1000000, parentId: null, inheritPct: 0 },
   ]);
   const [activeMemberId, setActiveMemberId] = useState("padre");
+  const [hovPt, setHovPt] = useState(null);
 
   const svgRef = useRef(null);
   const n = assets.length;
@@ -235,7 +236,6 @@ export default function App() {
   const updMember = (id, field, val) => setMembers(p => p.map(m => m.id === id ? { ...m, [field]: val } : m));
   const removeMember = id => { if (members.length <= 1) return; setMembers(p => p.filter(m => m.id !== id).map(m => m.parentId === id ? { ...m, parentId: null, inheritPct: 0 } : m)); if (activeMemberId === id) setActiveMemberId(members[0].id) };
   const moveMember = (idx, dir) => { const ni = idx + dir; if (ni < 0 || ni >= members.length) return; setMembers(p => { const nm = [...p]; const tmp = nm[idx]; nm[idx] = nm[ni]; nm[ni] = tmp; return nm }) };
-  const handleFC = e => { if (!frontier || !svgRef.current) return; const rect = svgRef.current.getBoundingClientRect(); const sx = 700 / rect.width, sy = 400 / rect.height; const cx = (e.clientX - rect.left) * sx, cy = (e.clientY - rect.top) * sy; const cv = ((cx - 60) / 620) * 30, cr = ((370 - cy) / 340) * 22; if (cv < 0 || cv > 30 || cr < 0 || cr > 22) return; let best = null, bd = Infinity; for (const p of frontier.points) { const d = Math.sqrt(((p.vol - cv) / 30) ** 2 + ((p.ret - cr) / 22) ** 2); if (d < bd) { bd = d; best = p } } if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) } };
 
   const box = { background: "#161B22", border: "1px solid #21262D", borderRadius: 10, padding: 20 };
   const micro = { fontSize: 10, color: "#484F58", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase", letterSpacing: 1 };
@@ -554,7 +554,44 @@ export default function App() {
 )}
 
 {/* ═══ FRONTIER ═══ */}
-{tab === "frontier" && (
+{tab === "frontier" && (() => {
+  const toSvgX = v => 60 + (v / 30) * 620;
+  const toSvgY = v => 370 - (v / 22) * 340;
+  const inView = (vol, ret) => vol >= 0 && vol <= 30 && ret >= 0 && ret <= 22;
+
+  // Collect labeled points for offset calculation
+  const labeledPts = [];
+  labeledPts.push({ vol: stats.vol, ret: stats.ret, name: "Editor", color: "#F85149" });
+  savedStats.forEach(s => labeledPts.push({ vol: s.vol, ret: s.ret, name: s.name, color: s.color }));
+  familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => labeledPts.push({ vol: m.consStats.vol, ret: m.consStats.ret, name: m.name, color: "#58A6FF" }));
+  if (familySummary.aggVal > 0) labeledPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret, name: "Familia", color: "#C9D1D9" });
+
+  // Compute label offsets to avoid overlap
+  const offsets = labeledPts.map((p, i) => {
+    let ox = 10, oy = 3;
+    for (let j = 0; j < i; j++) {
+      const dx = Math.abs(toSvgX(p.vol) - toSvgX(labeledPts[j].vol));
+      const dy = Math.abs(toSvgY(p.ret) - toSvgY(labeledPts[j].ret));
+      if (dx < 60 && dy < 14) { oy = oy > 0 ? -12 : 16; ox = dx < 30 ? -50 : 10; }
+    }
+    return { ox, oy };
+  });
+
+  const handleFrontierClick = e => {
+    if (!frontier || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const sx = 700 / rect.width, sy = 400 / rect.height;
+    const cx = (e.clientX - rect.left) * sx, cy = (e.clientY - rect.top) * sy;
+    let best = null, bd = Infinity;
+    for (const p of frontier.points) {
+      const px = toSvgX(p.vol), py = toSvgY(p.ret);
+      const d = Math.sqrt(((px - cx) / 620) ** 2 + ((py - cy) / 340) ** 2);
+      if (d < bd) { bd = d; best = p }
+    }
+    if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) }
+  };
+
+  return (
   <div style={box}>
     <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Frontier — Clickeá para seleccionar</h3>
     {cstOn && <p style={{ fontSize: 10, color: "#58A6FF", margin: "0 0 8px" }}>🔒 Constraints activos.</p>}
@@ -573,34 +610,70 @@ export default function App() {
         ) : null })}
       </div>
     </div>}
+    {hovPt && <div style={{ padding: "4px 10px", background: "#21262D", borderRadius: 4, fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#F0F6FC", marginBottom: 6 }}>
+      <span style={{ fontWeight: 600, color: hovPt.color }}>{hovPt.name}</span>
+      <span style={{ color: "#6E7681", marginLeft: 8 }}>Ret:{hovPt.ret.toFixed(1)}% Vol:{hovPt.vol.toFixed(1)}%</span>
+    </div>}
     {frontier && (
-      <svg ref={svgRef} viewBox="0 0 700 400" style={{ width: "100%", background: "#0D1117", borderRadius: 8, border: "1px solid #21262D", cursor: "crosshair" }} onClick={handleFC}>
-        {[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22].map(v => { const y = 370 - (v / 22) * 340; return <g key={`y${v}`}><line x1="60" y1={y} x2="680" y2={y} stroke="#21262D" strokeWidth=".5" /><text x="52" y={y + 4} textAnchor="end" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
-        {[0, 5, 10, 15, 20, 25, 30].map(v => { const x = 60 + (v / 30) * 620; return <g key={`x${v}`}><line x1={x} y1="30" x2={x} y2="370" stroke="#21262D" strokeWidth=".5" /><text x={x} y="386" textAnchor="middle" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
+      <svg ref={svgRef} viewBox="0 0 700 400" style={{ width: "100%", background: "#0D1117", borderRadius: 8, border: "1px solid #21262D", cursor: "crosshair" }} onClick={handleFrontierClick}>
+        {/* Grid */}
+        {[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22].map(v => { const y = toSvgY(v); return <g key={`y${v}`}><line x1="60" y1={y} x2="680" y2={y} stroke="#21262D" strokeWidth=".5" /><text x="52" y={y + 4} textAnchor="end" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
+        {[0, 5, 10, 15, 20, 25, 30].map(v => { const x = toSvgX(v); return <g key={`x${v}`}><line x1={x} y1="30" x2={x} y2="370" stroke="#21262D" strokeWidth=".5" /><text x={x} y="386" textAnchor="middle" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
         <text x="370" y="399" textAnchor="middle" fill="#6E7681" fontSize="9" fontFamily="JetBrains Mono">Volatility</text>
         <text x="12" y="200" textAnchor="middle" fill="#6E7681" fontSize="9" fontFamily="JetBrains Mono" transform="rotate(-90,12,200)">Return</text>
-        {frontier.points.map((p, i) => { const x = 60 + (p.vol / 30) * 620; const y = 370 - (p.ret / 22) * 340; return (x >= 60 && x <= 680 && y >= 30 && y <= 370) ? <circle key={i} cx={x} cy={y} r="1.2" fill="#30363D" opacity=".2" /> : null })}
-        {frontier.frontier.length > 2 && <polyline points={frontier.frontier.filter(p => p.vol <= 30 && p.ret <= 22).map(p => `${60 + (p.vol / 30) * 620},${370 - (p.ret / 22) * 340}`).join(" ")} fill="none" stroke="#D29922" strokeWidth="2.5" />}
-        {frontier.frontier.filter(p => p.vol <= 30 && p.ret <= 22).map((p, i) => <circle key={`fd${i}`} cx={60 + (p.vol / 30) * 620} cy={370 - (p.ret / 22) * 340} r="3" fill="#D29922" opacity=".4" />)}
-        <circle cx={60 + (stats.vol / 30) * 620} cy={370 - (stats.ret / 22) * 340} r="7" fill="#F85149" stroke="#F0F6FC" strokeWidth="2" />
-        <text x={Math.min(640, 60 + (stats.vol / 30) * 620 + 12)} y={370 - (stats.ret / 22) * 340 + 4} fill="#F85149" fontSize="9" fontWeight="600" fontFamily="JetBrains Mono">Editor</text>
-        <circle cx={60 + (ercStats.vol / 30) * 620} cy={370 - (ercStats.ret / 22) * 340} r="5" fill="#3FB950" stroke="#F0F6FC" strokeWidth="1.5" />
-        <text x={60 + (ercStats.vol / 30) * 620 + 9} y={370 - (ercStats.ret / 22) * 340 + 4} fill="#3FB950" fontSize="8" fontFamily="JetBrains Mono">ERC</text>
-        {savedStats.map(s => { const x = 60 + (s.vol / 30) * 620; const y = 370 - (s.ret / 22) * 340; return (x <= 680 && y >= 30) ? <g key={s.id}><circle cx={x} cy={y} r="5" fill={s.color} stroke="#F0F6FC" strokeWidth="1" /><text x={x + 8} y={y + 3} fill={s.color} fontSize="7" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> : null })}
-        {familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map(m => { const x = 60 + (m.consStats.vol / 30) * 620; const y = 370 - (m.consStats.ret / 22) * 340; return (x <= 680 && y >= 30) ? <g key={m.id}><rect x={x - 5} y={y - 5} width="10" height="10" rx="2" fill="#8B949E" stroke="#F0F6FC" strokeWidth="1" opacity=".8" /><text x={x + 9} y={y + 3} fill="#8B949E" fontSize="7" fontFamily="JetBrains Mono">{m.name}</text></g> : null })}
-        {familySummary.aggVal > 0 && (() => { const x = 60 + (familySummary.aggStats.vol / 30) * 620; const y = 370 - (familySummary.aggStats.ret / 22) * 340; return (x <= 680 && y >= 30) ? <g><polygon points={`${x},${y - 7} ${x - 6},${y + 5} ${x + 6},${y + 5}`} fill="#C9D1D9" stroke="#F0F6FC" strokeWidth="1" /><text x={x + 9} y={y + 3} fill="#C9D1D9" fontSize="7" fontWeight="700" fontFamily="JetBrains Mono">Familia</text></g> : null })()}
-        {assets.map(ac => { const x = 60 + (ac.annualizedVol / 30) * 620; const y = 370 - (ac.expectedReturn / 22) * 340; return (x <= 680 && y >= 30) ? <g key={ac.id}><circle cx={x} cy={y} r="3.5" fill={ac.color} opacity=".7" /><text x={x + 6} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono">{ac.name}</text></g> : null })}
-        {selPt && <circle cx={60 + (selPt.vol / 30) * 620} cy={370 - (selPt.ret / 22) * 340} r="8" fill="none" stroke="#58A6FF" strokeWidth="2.5" strokeDasharray="4 2" />}
-        {levOn && (() => { const rf = bc; const bs = pStats(nw, assets, corr); const slope = (bs.ret - rf) / (bs.vol + 1e-12); const er = Math.min(22, rf + slope * 30); return <line x1={60} y1={370 - (rf / 22) * 340} x2={680} y2={370 - (er / 22) * 340} stroke="#F85149" strokeWidth="1.5" strokeDasharray="6 3" opacity=".5" /> })()}
+        {/* Scatter */}
+        {frontier.points.map((p, i) => { const x = toSvgX(p.vol); const y = toSvgY(p.ret); return (x >= 58 && x <= 682 && y >= 28 && y <= 372) ? <circle key={i} cx={x} cy={y} r="1.3" fill="#30363D" opacity=".25" /> : null })}
+        {/* Frontier line */}
+        {frontier.frontier.length > 2 && <polyline points={frontier.frontier.filter(p => inView(p.vol, p.ret)).map(p => `${toSvgX(p.vol)},${toSvgY(p.ret)}`).join(" ")} fill="none" stroke="#D29922" strokeWidth="2.5" />}
+        {frontier.frontier.filter(p => inView(p.vol, p.ret)).map((p, i) => <circle key={`fd${i}`} cx={toSvgX(p.vol)} cy={toSvgY(p.ret)} r="3" fill="#D29922" opacity=".4" />)}
+        {/* CML line */}
+        {levOn && (() => { const rf = bc; const bs = pStats(nw, assets, corr); const slope = (bs.ret - rf) / (bs.vol + 1e-12); const er = Math.min(22, rf + slope * 30); return <line x1={toSvgX(0)} y1={toSvgY(rf)} x2={toSvgX(30)} y2={toSvgY(er)} stroke="#F85149" strokeWidth="1.5" strokeDasharray="6 3" opacity=".5" /> })()}
+        {/* Individual assets */}
+        {assets.map(ac => { if (!inView(ac.annualizedVol, ac.expectedReturn)) return null; const x = toSvgX(ac.annualizedVol); const y = toSvgY(ac.expectedReturn); return <g key={ac.id}><circle cx={x} cy={y} r="4" fill={ac.color} opacity=".6" stroke={ac.color} strokeWidth=".5" /><text x={x + 7} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono" opacity=".8">{ac.name}</text></g> })}
+        {/* Saved portfolios */}
+        {savedStats.map(s => { if (!inView(s.vol, s.ret)) return null; const x = toSvgX(s.vol); const y = toSvgY(s.ret); return <g key={s.id} onMouseEnter={() => setHovPt({ name: s.name, ret: s.ret, vol: s.vol, color: s.color })} onMouseLeave={() => setHovPt(null)}><circle cx={x} cy={y} r="6" fill={s.color} stroke="#F0F6FC" strokeWidth="1.5" /><text x={x + 10} y={y + 3} fill={s.color} fontSize="8" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> })}
+        {/* Editor (current) */}
+        {inView(stats.vol, stats.ret) && <g onMouseEnter={() => setHovPt({ name: "Editor", ret: stats.ret, vol: stats.vol, color: "#F85149" })} onMouseLeave={() => setHovPt(null)}>
+          <circle cx={toSvgX(stats.vol)} cy={toSvgY(stats.ret)} r="8" fill="#F85149" stroke="#F0F6FC" strokeWidth="2" />
+          {(() => { const o = offsets[0] || { ox: 10, oy: 3 }; return <text x={toSvgX(stats.vol) + o.ox} y={toSvgY(stats.ret) + o.oy} fill="#F85149" fontSize="9" fontWeight="600" fontFamily="JetBrains Mono">Editor</text> })()}
+        </g>}
+        {/* Family members — larger, distinct shape with glow */}
+        {familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map((m, mi) => {
+          if (!inView(m.consStats.vol, m.consStats.ret)) return null;
+          const x = toSvgX(m.consStats.vol); const y = toSvgY(m.consStats.ret);
+          const oi = 1 + savedStats.length + mi;
+          const o = offsets[oi] || { ox: 12, oy: mi % 2 === 0 ? -12 : 14 };
+          return <g key={m.id} onMouseEnter={() => setHovPt({ name: m.name, ret: m.consStats.ret, vol: m.consStats.vol, color: "#58A6FF" })} onMouseLeave={() => setHovPt(null)}>
+            <circle cx={x} cy={y} r="12" fill="#58A6FF" opacity=".12" />
+            <rect x={x - 7} y={y - 7} width="14" height="14" rx="3" fill="#161B22" stroke="#58A6FF" strokeWidth="2.5" />
+            <text x={x} y={y + 3} textAnchor="middle" fill="#58A6FF" fontSize="7" fontWeight="700" fontFamily="JetBrains Mono">{m.name.charAt(0)}</text>
+            <line x1={x + 7} y1={y} x2={x + o.ox - 2} y2={y + o.oy - 3} stroke="#58A6FF" strokeWidth=".7" opacity=".5" />
+            <text x={x + o.ox} y={y + o.oy} fill="#58A6FF" fontSize="8" fontWeight="700" fontFamily="JetBrains Mono">{m.name}</text>
+          </g> })}
+        {/* Family aggregate — triangle */}
+        {familySummary.aggVal > 0 && inView(familySummary.aggStats.vol, familySummary.aggStats.ret) && (() => {
+          const x = toSvgX(familySummary.aggStats.vol); const y = toSvgY(familySummary.aggStats.ret);
+          const lastOi = labeledPts.length - 1;
+          const o = offsets[lastOi] || { ox: 12, oy: -10 };
+          return <g onMouseEnter={() => setHovPt({ name: "Familia Total", ret: familySummary.aggStats.ret, vol: familySummary.aggStats.vol, color: "#C9D1D9" })} onMouseLeave={() => setHovPt(null)}>
+            <circle cx={x} cy={y} r="14" fill="#C9D1D9" opacity=".08" />
+            <polygon points={`${x},${y - 9} ${x - 8},${y + 6} ${x + 8},${y + 6}`} fill="#161B22" stroke="#C9D1D9" strokeWidth="2.5" />
+            <line x1={x + 8} y1={y} x2={x + o.ox - 2} y2={y + o.oy - 3} stroke="#C9D1D9" strokeWidth=".7" opacity=".5" />
+            <text x={x + o.ox} y={y + o.oy} fill="#C9D1D9" fontSize="8" fontWeight="700" fontFamily="JetBrains Mono">Familia</text>
+          </g> })()}
+        {/* Selected point indicator */}
+        {selPt && inView(selPt.vol, selPt.ret) && <circle cx={toSvgX(selPt.vol)} cy={toSvgY(selPt.ret)} r="9" fill="none" stroke="#58A6FF" strokeWidth="2.5" strokeDasharray="4 2" />}
       </svg>
     )}
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10, fontSize: 10 }}>
-      <span style={{ color: "#F85149" }}>● Editor</span><span style={{ color: "#3FB950" }}>● ERC</span>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10, fontSize: 10, alignItems: "center" }}>
+      <span style={{ color: "#F85149" }}>● Editor</span>
       {savedStats.map(s => <span key={s.id} style={{ color: s.color }}>● {s.name}</span>)}
-      <span style={{ color: "#8B949E" }}>■ Miembros</span><span style={{ color: "#C9D1D9" }}>▲ Familia</span>
+      <span style={{ color: "#58A6FF" }}>■ Miembros</span><span style={{ color: "#C9D1D9" }}>▲ Familia</span>
+      <span style={{ color: "#D29922" }}>— Efficient Frontier</span>
     </div>
   </div>
-)}
+  );
+})()}
 
 {/* ═══ LEVERAGE ═══ */}
 {tab === "leverage" && (
