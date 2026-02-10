@@ -228,12 +228,13 @@ export default function App() {
   const applyERC = () => setWeights(ercW.map(w => Math.round(w * 1000) / 10));
   const toggleLock = idx => { setLocked(p => { const nl = { ...p }; if (nl[idx] !== undefined) delete nl[idx]; else nl[idx] = weights[idx]; return nl }); setShowF(false) };
   const toggleCst = v => { setCstOn(v); setShowF(false) };
-  const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; setSaved(p => [...p, { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[p.length % SAVED_COLORS.length] }]); setSaveName("") };
+  const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; setSaved(p => [...p, { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[p.length % SAVED_COLORS.length], constraints: { locked: { ...locked }, maxIll, cstOn } }]); setSaveName("") };
   const removeSaved = id => { setSaved(p => p.filter(s => s.id !== id)); setMembers(p => p.map(m => m.portfolioId === id ? { ...m, portfolioId: null } : m)) };
   const loadSaved = s => setWeights([...s.weights]);
   const addMember = (parentId) => { const id = `m_${Date.now()}`; setMembers(p => [...p, { id, name: "Hijo " + p.length, portfolioId: null, value: 500000, parentId: parentId || null, inheritPct: parentId ? 50 : 0 }]) };
   const updMember = (id, field, val) => setMembers(p => p.map(m => m.id === id ? { ...m, [field]: val } : m));
   const removeMember = id => { if (members.length <= 1) return; setMembers(p => p.filter(m => m.id !== id).map(m => m.parentId === id ? { ...m, parentId: null, inheritPct: 0 } : m)); if (activeMemberId === id) setActiveMemberId(members[0].id) };
+  const moveMember = (idx, dir) => { const ni = idx + dir; if (ni < 0 || ni >= members.length) return; setMembers(p => { const nm = [...p]; const tmp = nm[idx]; nm[idx] = nm[ni]; nm[ni] = tmp; return nm }) };
   const handleFC = e => { if (!frontier || !svgRef.current) return; const rect = svgRef.current.getBoundingClientRect(); const sx = 700 / rect.width, sy = 400 / rect.height; const cx = (e.clientX - rect.left) * sx, cy = (e.clientY - rect.top) * sy; const cv = ((cx - 60) / 620) * 30, cr = ((370 - cy) / 340) * 22; if (cv < 0 || cv > 30 || cr < 0 || cr > 22) return; let best = null, bd = Infinity; for (const p of frontier.frontier) { const d = Math.sqrt(((p.vol - cv) / 30) ** 2 + ((p.ret - cr) / 22) ** 2); if (d < bd) { bd = d; best = p } } if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) } };
 
   const box = { background: "#161B22", border: "1px solid #21262D", borderRadius: 10, padding: 20 };
@@ -300,7 +301,7 @@ export default function App() {
             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "#0D1117", border: "1px solid #21262D", borderRadius: 6 }}>
               <div style={{ width: 8, height: 8, borderRadius: 4, background: s.color, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#F0F6FC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#F0F6FC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name} {s.constraints && s.constraints.cstOn && <span style={{ fontSize: 8, color: "#58A6FF", background: "#0D2240", padding: "1px 4px", borderRadius: 3, marginLeft: 4 }}>🔒</span>}</div>
                 <div style={{ fontSize: 9, fontFamily: "'JetBrains Mono',monospace", color: "#6E7681" }}>E[R]:{ss.ret.toFixed(1)}% Vol:{ss.vol.toFixed(1)}% Sharpe:{((ss.ret - 3.5) / (ss.vol + 1e-12)).toFixed(2)}</div>
               </div>
               <button onClick={() => loadSaved(s)} style={{ padding: "3px 8px", fontSize: 9, background: "#21262D", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", cursor: "pointer" }}>Cargar</button>
@@ -385,8 +386,12 @@ export default function App() {
                   <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>{m.consStats.vol.toFixed(1)}%</td>
                   <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "'JetBrains Mono',monospace", color: m.consStats.var5 < 0 ? "#F85149" : "#3FB950" }}>{m.consStats.var5.toFixed(1)}%</td>
                   <td style={{ padding: "8px 6px" }}>
-                    <button onClick={e => { e.stopPropagation(); addMember(m.id) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#58A6FF", fontSize: 11 }} title="Agregar hijo">+hijo</button>
-                    {members.length > 1 && <button onClick={e => { e.stopPropagation(); removeMember(m.id) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#F85149", fontSize: 14, marginLeft: 4 }}>×</button>}
+                    <div style={{ display: "flex", gap: 2, alignItems: "center" }}>
+                      <button onClick={e => { e.stopPropagation(); const idx = members.findIndex(x => x.id === m.id); moveMember(idx, -1) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#6E7681", fontSize: 11, padding: "0 2px" }} title="Mover arriba">↑</button>
+                      <button onClick={e => { e.stopPropagation(); const idx = members.findIndex(x => x.id === m.id); moveMember(idx, 1) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#6E7681", fontSize: 11, padding: "0 2px" }} title="Mover abajo">↓</button>
+                      <button onClick={e => { e.stopPropagation(); addMember(m.id) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#58A6FF", fontSize: 11 }} title="Agregar hijo">+hijo</button>
+                      {members.length > 1 && <button onClick={e => { e.stopPropagation(); removeMember(m.id) }} style={{ background: "none", border: "none", cursor: "pointer", color: "#F85149", fontSize: 14, marginLeft: 2 }}>×</button>}
+                    </div>
                   </td>
                 </tr>
               );
@@ -403,6 +408,46 @@ export default function App() {
         </table>
       </div>
     </div>
+    {/* Constraint violation warnings */}
+    {(() => {
+      const warnings = [];
+      familySummary.members.forEach(m => {
+        if (!m.portfolioId) return;
+        const sp = saved.find(s => s.id === m.portfolioId);
+        if (!sp || !sp.constraints || !sp.constraints.cstOn) return;
+        const cst = sp.constraints;
+        const sw = sp.weights.map(w => w / 100);
+        // Check locked constraints
+        if (cst.locked) {
+          Object.entries(cst.locked).forEach(([idx, fixedVal]) => {
+            const i = Number(idx);
+            const actual = sp.weights[i];
+            if (actual !== undefined && Math.abs(actual - fixedVal) > 0.5) {
+              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería ser ${fixedVal}% (es ${actual.toFixed(1)}%)`, type: "lock" });
+            }
+          });
+        }
+        // Check illiquidity constraint
+        if (cst.maxIll !== undefined) {
+          const illiq = assets.reduce((s, a, i) => s + (a.liquid ? 0 : sw[i] * 100), 0);
+          if (illiq > cst.maxIll) {
+            warnings.push({ member: m.name, portfolio: sp.name, msg: `Ilíquido ${illiq.toFixed(1)}% > máx ${cst.maxIll}%`, type: "liquidity" });
+          }
+        }
+      });
+      return warnings.length > 0 ? (
+        <div style={{ padding: 14, background: "#3D1117", borderRadius: 8, border: "1px solid #F85149", marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: "#F85149", fontWeight: 700, marginBottom: 8 }}>⚠ Constraint Violations</div>
+          {warnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 11, color: "#F97583", padding: "3px 0", display: "flex", gap: 8 }}>
+              <span style={{ fontWeight: 600, color: "#F0F6FC" }}>{w.member}</span>
+              <span style={{ color: "#6E7681" }}>({w.portfolio})</span>
+              <span>{w.msg}</span>
+            </div>
+          ))}
+        </div>
+      ) : null;
+    })()}
     {/* Member detail */}
     {(() => { const m = members.find(x => x.id === activeMemberId); if (!m) return null; const c = getMemberConsolidated(m.id); const parent = m.parentId ? members.find(x => x.id === m.parentId) : null; return (
       <div style={box}>
@@ -513,7 +558,21 @@ export default function App() {
   <div style={box}>
     <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Frontier — Clickeá para seleccionar</h3>
     {cstOn && <p style={{ fontSize: 10, color: "#58A6FF", margin: "0 0 8px" }}>🔒 Constraints activos.</p>}
-    {selPt && <div style={{ display: "flex", gap: 10, padding: "6px 12px", background: "#0D1117", borderRadius: 6, border: "1px solid #58A6FF", margin: "6px 0 10px", flexWrap: "wrap", alignItems: "center" }}><span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 600 }}>Selected:</span><span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#3FB950" }}>Ret {selPt.ret.toFixed(1)}%</span><span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>Vol {selPt.vol.toFixed(1)}%</span></div>}
+    {selPt && <div style={{ display: "flex", gap: 10, padding: "8px 12px", background: "#0D1117", borderRadius: 6, border: "1px solid #58A6FF", margin: "6px 0 10px", flexWrap: "wrap", alignItems: "center" }}>
+      <span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 600 }}>Selected:</span>
+      <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#3FB950" }}>Ret {selPt.ret.toFixed(1)}%</span>
+      <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>Vol {selPt.vol.toFixed(1)}%</span>
+      <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#8B949E" }}>VaR5: {selPt.var5.toFixed(1)}%</span>
+      <div style={{ width: "100%", display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+        {assets.map((ac, i) => { const pct = (selPt.weights[i] || 0) * 100; return pct > 0.5 ? (
+          <span key={ac.id} style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 6, height: 6, borderRadius: 2, background: ac.color, display: "inline-block" }} />
+            <span style={{ color: "#C9D1D9" }}>{ac.name}:</span>
+            <span style={{ color: ac.color, fontWeight: 600 }}>{pct.toFixed(1)}%</span>
+          </span>
+        ) : null })}
+      </div>
+    </div>}
     {frontier && (
       <svg ref={svgRef} viewBox="0 0 700 400" style={{ width: "100%", background: "#0D1117", borderRadius: 8, border: "1px solid #21262D", cursor: "crosshair" }} onClick={handleFC}>
         {[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22].map(v => { const y = 370 - (v / 22) * 340; return <g key={`y${v}`}><line x1="60" y1={y} x2="680" y2={y} stroke="#21262D" strokeWidth=".5" /><text x="52" y={y + 4} textAnchor="end" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
