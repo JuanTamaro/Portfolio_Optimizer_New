@@ -243,6 +243,9 @@ function AppInner() {
   const [activeMemberId, setActiveMemberId] = useState("padre");
   const [fShow, setFShow] = useState({ editor: true, assets: true, saved: true, members: true, familia: true });
   const [dbReady, setDbReady] = useState(false);
+  const [savedCst, setSavedCst] = useState([]);
+  const [cstName, setCstName] = useState("");
+  const [activeCstId, setActiveCstId] = useState(null);
 
   // ─── SUPABASE: Load on mount ───
   useEffect(() => {
@@ -266,6 +269,11 @@ function AppInner() {
         if (fData && fData.length > 0) {
           setMembers(fData.map(f => ({ id: f.id, name: f.name, portfolioId: f.portfolio_id, value: +f.value, parentId: f.parent_id, inheritPct: +f.inherit_pct })));
           setActiveMemberId(fData[0].id);
+        }
+        // Load saved constraints
+        const cData = await sb.select("saved_constraints", "order=created_at.asc");
+        if (cData && cData.length > 0) {
+          setSavedCst(cData.map(c => ({ id: c.id, name: c.name, locked: c.locked, maxIll: c.max_ill, cstOn: c.cst_on })));
         }
       } catch (e) { console.warn("Supabase load error:", e); }
       setDbReady(true);
@@ -305,6 +313,19 @@ function AppInner() {
     try {
       await sb.upsert("assumptions", [{ id: 1, assets: a, correlation: c, updated_at: new Date().toISOString() }]);
     } catch (e) { console.warn("Sync assumptions error:", e); }
+  }, [dbReady]);
+
+  // ─── SUPABASE: Sync saved constraints ───
+  const dbSyncCst = useCallback(async (csts) => {
+    if (!dbReady) return;
+    try {
+      await sb.deleteAll("saved_constraints");
+      if (csts.length > 0) {
+        await sb.upsert("saved_constraints",
+          csts.map(c => ({ id: c.id, name: c.name, locked: c.locked, max_ill: c.maxIll, cst_on: c.cstOn }))
+        );
+      }
+    } catch (e) { console.warn("Sync constraints error:", e); }
   }, [dbReady]);
 
   const svgRef = useRef(null);
@@ -380,8 +401,9 @@ function AppInner() {
       const c = getMemberConsolidated(m.id);
       return { ...m, ...c };
     });
-    const aggVal = mems.reduce((s, m) => s + m.totalValue, 0);
-    const aggW = aggVal > 0 ? assets.map((_, i) => mems.reduce((s, m) => s + m.consWeights[i] * m.totalValue, 0) / aggVal) : Array(n).fill(0);
+    // Aggregate uses each member's OWN value + OWN weights only (no double-counting inheritance)
+    const aggVal = mems.reduce((s, m) => s + m.ownValue, 0);
+    const aggW = aggVal > 0 ? assets.map((_, i) => mems.reduce((s, m) => s + m.ownWeights[i] * m.ownValue, 0) / aggVal) : Array(n).fill(0);
     const aggStats = pStats(aggW, assets, corr);
     return { members: mems, aggW, aggVal, aggStats };
   }, [members, assets, corr, getMemberConsolidated, n]);
@@ -449,6 +471,9 @@ function AppInner() {
   };
   const setCst = (idx, cst) => { setLocked(p => { const nl = { ...p }; if (cst === null) delete nl[idx]; else nl[idx] = cst; return nl }); setShowF(false) };
   const toggleCst = v => { setCstOn(v); setShowF(false) };
+  const saveCst = () => { const name = cstName.trim() || `Constraint ${savedCst.length + 1}`; const nc = { id: `cst_${Date.now()}`, name, locked: { ...locked }, maxIll, cstOn }; setSavedCst(p => { const ns = [...p, nc]; dbSyncCst(ns); return ns }); setCstName(""); setActiveCstId(nc.id) };
+  const loadCst = c => { setLocked(c.locked || {}); setMaxIll(c.maxIll ?? 50); setCstOn(c.cstOn ?? true); setActiveCstId(c.id); setShowF(false) };
+  const removeCst = id => { setSavedCst(p => { const ns = p.filter(c => c.id !== id); dbSyncCst(ns); return ns }); if (activeCstId === id) setActiveCstId(null) };
   const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; const np = { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[saved.length % SAVED_COLORS.length], constraints: { locked: { ...locked }, maxIll, cstOn } }; setSaved(p => { const ns = [...p, np]; dbSyncSaved(ns); return ns }); setSaveName("") };
   const removeSaved = id => { setSaved(p => { const ns = p.filter(s => s.id !== id); dbSyncSaved(ns); return ns }); setMembers(p => { const nm = p.map(m => m.portfolioId === id ? { ...m, portfolioId: null } : m); dbSyncMembers(nm); return nm }) };
   const loadSaved = s => setWeights([...s.weights]);
@@ -468,7 +493,7 @@ function AppInner() {
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
           <h1 style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 22, fontWeight: 700, color: "#F0F6FC", margin: 0 }}>Portfolio Optimizer</h1>
-          <span style={{ fontSize: 11, color: "#484F58", fontFamily: "'JetBrains Mono',monospace" }}>v5.0 — Family Office</span>
+          <span style={{ fontSize: 11, color: "#484F58", fontFamily: "'JetBrains Mono',monospace" }}>v6.1 — Family Office</span>
           {mod && <span style={{ fontSize: 10, color: "#D29922", background: "#2D2200", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>● modified</span>}
           {levOn && (() => { const lKeys = Object.keys(levRatios).filter(k => levRatios[k] > 1); const summary = lKeys.length === 0 ? "ON" : lKeys.length <= 2 ? lKeys.map(k => `${assets[+k]?.name}:${levRatios[k]}x`).join(" ") : `${lKeys.length} assets`; return <span style={{ fontSize: 10, color: "#F85149", background: "#3D1117", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>⚡ {summary}</span> })()}
           {cstOn && <span style={{ fontSize: 10, color: "#58A6FF", background: "#0D2240", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>🔒 constraints</span>}
@@ -802,6 +827,24 @@ function AppInner() {
         {assets.map((ac, i) => (<button key={ac.id} onClick={() => updAsset(i, "liquid", !ac.liquid)} style={{ padding: "4px 8px", fontSize: 10, background: ac.liquid ? "#1F3A2D" : "#2D2200", border: `1px solid ${ac.liquid ? "#238636" : "#D29922"}`, borderRadius: 4, color: ac.liquid ? "#3FB950" : "#D29922", cursor: "pointer" }}><span style={{ display: "inline-block", width: 6, height: 6, borderRadius: 2, background: ac.color, marginRight: 4 }} />{ac.name}:{ac.liquid ? "LIQ" : "ILL"}</button>))}
       </div>
     </div>
+    {/* Save / Load Constraints */}
+    <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #21262D" }}>
+      <div style={{ ...micro, marginBottom: 8 }}>Saved Constraints</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input value={cstName} onChange={e => setCstName(e.target.value)} placeholder="Nombre..." style={{ flex: 1, padding: "6px 10px", background: "#0D1117", border: "1px solid #30363D", borderRadius: 5, color: "#F0F6FC", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", outline: "none" }} />
+        <button onClick={saveCst} style={{ padding: "6px 14px", fontSize: 11, background: "#1F3A2D", border: "1px solid #238636", borderRadius: 5, color: "#3FB950", cursor: "pointer", fontWeight: 600 }}>💾 Guardar</button>
+      </div>
+      {savedCst.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {savedCst.map(c => (
+          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: activeCstId === c.id ? "#0D2240" : "#0D1117", border: `1px solid ${activeCstId === c.id ? "#58A6FF" : "#21262D"}`, borderRadius: 6 }}>
+            <span style={{ flex: 1, fontSize: 11, color: activeCstId === c.id ? "#58A6FF" : "#C9D1D9", fontWeight: activeCstId === c.id ? 600 : 400 }}>{c.name}</span>
+            <span style={{ fontSize: 9, color: "#484F58", fontFamily: "'JetBrains Mono',monospace" }}>{Object.keys(c.locked || {}).length} cst</span>
+            <button onClick={() => loadCst(c)} style={{ padding: "3px 8px", fontSize: 9, background: "#21262D", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", cursor: "pointer" }}>Cargar</button>
+            <button onClick={() => removeCst(c.id)} style={{ background: "none", border: "none", color: "#F85149", cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>
+          </div>
+        ))}
+      </div>}
+    </div>
   </div>
 )}
 
@@ -826,9 +869,31 @@ function AppInner() {
 
 {/* ═══ FRONTIER ═══ */}
 {tab === "frontier" && (() => {
-  const toSvgX = v => 60 + (v / 30) * 620;
-  const toSvgY = v => 370 - (v / 22) * 340;
-  const inView = (vol, ret) => vol >= 0 && vol <= 30 && ret >= 0 && ret <= 22;
+  // Dynamic axes based on all visible points
+  const allPts = [];
+  if (frontier) frontier.points.forEach(p => allPts.push(p));
+  if (fShow.editor) allPts.push({ vol: stats.vol, ret: stats.ret });
+  if (fShow.assets) assets.forEach(a => allPts.push({ vol: a.annualizedVol, ret: a.expectedReturn }));
+  if (fShow.saved) savedStats.forEach(s => allPts.push({ vol: s.vol, ret: s.ret }));
+  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => allPts.push({ vol: m.consStats.vol, ret: m.consStats.ret }));
+  if (fShow.familia && familySummary.aggVal > 0) allPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret });
+
+  const pad = 0.5;
+  const volMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts.map(p => p.vol)) - pad)) : 0;
+  const volMax = allPts.length > 0 ? Math.ceil(Math.max(...allPts.map(p => p.vol)) + pad) : 30;
+  const retMin = allPts.length > 0 ? Math.max(0, Math.floor(Math.min(...allPts.map(p => p.ret)) - pad)) : 0;
+  const retMax = allPts.length > 0 ? Math.ceil(Math.max(...allPts.map(p => p.ret)) + pad) : 22;
+  const vRange = Math.max(1, volMax - volMin), rRange = Math.max(1, retMax - retMin);
+
+  const toSvgX = v => 60 + ((v - volMin) / vRange) * 620;
+  const toSvgY = v => 370 - ((v - retMin) / rRange) * 340;
+  const inView = (vol, ret) => vol >= volMin && vol <= volMax && ret >= retMin && ret <= retMax;
+
+  // Grid tick generation
+  const volStep = vRange <= 5 ? 0.5 : vRange <= 15 ? 1 : vRange <= 30 ? 2 : 5;
+  const retStep = rRange <= 5 ? 0.5 : rRange <= 15 ? 1 : rRange <= 20 ? 2 : 5;
+  const volTicks = []; for (let v = Math.ceil(volMin / volStep) * volStep; v <= volMax; v += volStep) volTicks.push(+v.toFixed(1));
+  const retTicks = []; for (let v = Math.ceil(retMin / retStep) * retStep; v <= retMax; v += retStep) retTicks.push(+v.toFixed(1));
 
   // Collect labeled points for offset calculation (only visible ones)
   const labeledPts = [];
@@ -847,7 +912,6 @@ function AppInner() {
     return { ox, oy };
   });
 
-  // Offset index tracker
   let oi = 0;
   const nextOi = () => offsets[oi++] || { ox: 10, oy: 3 };
 
@@ -884,7 +948,17 @@ function AppInner() {
         {chk("familia", "Familia", "#C9D1D9")}
       </div>
     </div>
-    {cstOn && <p style={{ fontSize: 10, color: "#58A6FF", margin: "0 0 8px" }}>🔒 Constraints activos.</p>}
+    {/* Constraint selector in Frontier */}
+    {savedCst.length > 0 && (
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: "#484F58" }}>Constraints:</span>
+        <button onClick={() => { setLocked({}); setCstOn(false); setActiveCstId(null); setShowF(true) }} style={{ padding: "3px 8px", fontSize: 9, background: !activeCstId && !cstOn ? "#21262D" : "#0D1117", border: `1px solid ${!activeCstId && !cstOn ? "#30363D" : "#21262D"}`, borderRadius: 4, color: !activeCstId && !cstOn ? "#F0F6FC" : "#484F58", cursor: "pointer" }}>Ninguno</button>
+        {savedCst.map(c => (
+          <button key={c.id} onClick={() => { setLocked(c.locked || {}); setMaxIll(c.maxIll ?? 50); setCstOn(c.cstOn ?? true); setActiveCstId(c.id); setShowF(true) }} style={{ padding: "3px 8px", fontSize: 9, background: activeCstId === c.id ? "#0D2240" : "#0D1117", border: `1px solid ${activeCstId === c.id ? "#58A6FF" : "#21262D"}`, borderRadius: 4, color: activeCstId === c.id ? "#58A6FF" : "#C9D1D9", cursor: "pointer" }}>{c.name}</button>
+        ))}
+      </div>
+    )}
+    {cstOn && <p style={{ fontSize: 10, color: "#58A6FF", margin: "0 0 8px" }}>🔒 Constraints: {activeCstId ? savedCst.find(c => c.id === activeCstId)?.name || "Custom" : "Custom"}</p>}
     {selPt && <div style={{ display: "flex", gap: 10, padding: "8px 12px", background: "#0D1117", borderRadius: 6, border: "1px solid #58A6FF", margin: "6px 0 10px", flexWrap: "wrap", alignItems: "center" }}>
       <span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 600 }}>Selected:</span>
       <span style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#3FB950" }}>Ret {selPt.ret.toFixed(1)}%</span>
@@ -903,8 +977,8 @@ function AppInner() {
     {frontier && (
       <svg ref={svgRef} viewBox="0 0 700 400" style={{ width: "100%", background: "#0D1117", borderRadius: 8, border: "1px solid #21262D", cursor: "crosshair" }} onClick={handleFrontierClick}>
         {/* Grid */}
-        {[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22].map(v => { const y = toSvgY(v); return <g key={`y${v}`}><line x1="60" y1={y} x2="680" y2={y} stroke="#21262D" strokeWidth=".5" /><text x="52" y={y + 4} textAnchor="end" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
-        {[0, 5, 10, 15, 20, 25, 30].map(v => { const x = toSvgX(v); return <g key={`x${v}`}><line x1={x} y1="30" x2={x} y2="370" stroke="#21262D" strokeWidth=".5" /><text x={x} y="386" textAnchor="middle" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
+        {retTicks.map(v => { const y = toSvgY(v); return <g key={`y${v}`}><line x1="60" y1={y} x2="680" y2={y} stroke="#21262D" strokeWidth=".5" /><text x="52" y={y + 4} textAnchor="end" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
+        {volTicks.map(v => { const x = toSvgX(v); return <g key={`x${v}`}><line x1={x} y1="30" x2={x} y2="370" stroke="#21262D" strokeWidth=".5" /><text x={x} y="386" textAnchor="middle" fill="#484F58" fontSize="8" fontFamily="JetBrains Mono">{v}%</text></g> })}
         <text x="370" y="399" textAnchor="middle" fill="#6E7681" fontSize="9" fontFamily="JetBrains Mono">Volatility</text>
         <text x="12" y="200" textAnchor="middle" fill="#6E7681" fontSize="9" fontFamily="JetBrains Mono" transform="rotate(-90,12,200)">Return</text>
         {/* Scatter */}
@@ -913,7 +987,7 @@ function AppInner() {
         {frontier.frontier.length > 2 && <polyline points={frontier.frontier.filter(p => inView(p.vol, p.ret)).map(p => `${toSvgX(p.vol)},${toSvgY(p.ret)}`).join(" ")} fill="none" stroke="#D29922" strokeWidth="2.5" />}
         {frontier.frontier.filter(p => inView(p.vol, p.ret)).map((p, i) => <circle key={`fd${i}`} cx={toSvgX(p.vol)} cy={toSvgY(p.ret)} r="3" fill="#D29922" opacity=".4" />)}
         {/* CML line */}
-        {levOn && (() => { const rf = bc; const bs = pStats(nw, assets, corr); const slope = (bs.ret - rf) / (bs.vol + 1e-12); const er = Math.min(22, rf + slope * 30); return <line x1={toSvgX(0)} y1={toSvgY(rf)} x2={toSvgX(30)} y2={toSvgY(er)} stroke="#F85149" strokeWidth="1.5" strokeDasharray="6 3" opacity=".5" /> })()}
+        {levOn && (() => { const rf = bc; const bs = pStats(nw, assets, corr); const slope = (bs.ret - rf) / (bs.vol + 1e-12); const er = Math.min(retMax, rf + slope * volMax); return <line x1={toSvgX(0)} y1={toSvgY(rf)} x2={toSvgX(volMax)} y2={toSvgY(er)} stroke="#F85149" strokeWidth="1.5" strokeDasharray="6 3" opacity=".5" /> })()}
         {/* Individual assets */}
         {fShow.assets && assets.map(ac => { if (!inView(ac.annualizedVol, ac.expectedReturn)) return null; const x = toSvgX(ac.annualizedVol); const y = toSvgY(ac.expectedReturn); return <g key={ac.id}><circle cx={x} cy={y} r="4" fill={ac.color} opacity=".6" stroke={ac.color} strokeWidth=".5" /><text x={x + 7} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono" opacity=".8">{ac.name}</text></g> })}
         {/* Saved portfolios */}
@@ -954,7 +1028,7 @@ function AppInner() {
     </div>
   </div>
   );
-})()}
+})()} 
 
 {/* ═══ LEVERAGE ═══ */}
 {tab === "leverage" && (
