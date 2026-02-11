@@ -29,8 +29,8 @@ function pStats(w, assets, corr) {
   return { ret, vol, var5: ret - 1.645 * vol };
 }
 
-function pStatsLev(w, assets, corr, li, lr, bc) {
-  const aw = w.map((wi, i) => i === li ? wi * lr : wi);
+function pStatsLev(w, assets, corr, levRatios, bc) {
+  const aw = w.map((wi, i) => wi * (levRatios[i] || 1));
   const te = aw.reduce((a, b) => a + b, 0);
   let ret = 0; for (let i = 0; i < aw.length; i++) ret += aw[i] * assets[i].expectedReturn;
   ret -= (te - 1) * bc;
@@ -173,8 +173,7 @@ export default function App() {
   const [selPt, setSelPt] = useState(null);
   const [showF, setShowF] = useState(false);
   const [levOn, setLevOn] = useState(false);
-  const [levIdx, setLevIdx] = useState(2);
-  const [levR, setLevR] = useState(1.5);
+  const [levRatios, setLevRatios] = useState({});
   const [bc, setBc] = useState(5);
   const [locked, setLocked] = useState({});
   const [maxIll, setMaxIll] = useState(50);
@@ -194,11 +193,11 @@ export default function App() {
 
   const stats = useMemo(() => {
     if (!levOn) return { ...pStats(nw, assets, corr), totalExposure: 1 };
-    return pStatsLev(nw, assets, corr, Math.min(levIdx, n - 1), levR, bc);
-  }, [weights, assets, corr, levOn, levIdx, levR, bc, n, nw]);
+    return pStatsLev(nw, assets, corr, levRatios, bc);
+  }, [weights, assets, corr, levOn, levRatios, bc, n, nw]);
 
   const riskBudget = useMemo(() => {
-    const aw = levOn ? nw.map((w, i) => i === Math.min(levIdx, n - 1) ? w * levR : w) : nw;
+    const aw = levOn ? nw.map((w, i) => w * (levRatios[i] || 1)) : nw;
     let tv = 0;
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++)
       tv += aw[i] * aw[j] * assets[i].annualizedVol * assets[j].annualizedVol * corr[i][j] / 10000;
@@ -210,7 +209,7 @@ export default function App() {
       const rc = aw[i] * mrc;
       return { ...ac, idx: i, mrc, rc, pctRisk: (rc / (pv + 1e-12)) * 100, weight: nw[i] * 100 };
     });
-  }, [weights, assets, corr, levOn, levIdx, levR, n, nw]);
+  }, [weights, assets, corr, levOn, levRatios, n, nw]);
 
   const ercExcl = useMemo(() => assets.map((a, i) => a.annualizedVol <= 0.01 ? i : -1).filter(i => i >= 0), [assets]);
   const ercW = useMemo(() => calcERC(assets, corr, ercExcl), [assets, corr, ercExcl]);
@@ -307,7 +306,9 @@ export default function App() {
     setCorr(p => p.filter((_, i) => i !== idx).map(r => r.filter((_, j) => j !== idx)));
     setLocked(p => { const nl = {}; Object.keys(p).forEach(k => { const ki = +k; if (ki < idx) nl[ki] = p[k]; else if (ki > idx) nl[ki - 1] = p[k] }); return nl });
     setSaved(p => p.map(s => ({ ...s, weights: s.weights.filter((_, i) => i !== idx) })));
-    if (levIdx >= idx && levIdx > 0) setLevIdx(p => Math.max(0, p - (idx <= p ? 1 : 0))); setShowF(false);
+    // Re-key levRatios
+    setLevRatios(p => { const nl = {}; Object.keys(p).forEach(k => { const ki = +k; if (ki < idx) nl[ki] = p[k]; else if (ki > idx) nl[ki - 1] = p[k] }); return nl });
+    setShowF(false);
   };
   const applyERC = () => {
     const fixedIdx = Object.keys(locked).map(Number).filter(k => cIsFixed(locked, k));
@@ -347,7 +348,7 @@ export default function App() {
           <h1 style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 22, fontWeight: 700, color: "#F0F6FC", margin: 0 }}>Portfolio Optimizer</h1>
           <span style={{ fontSize: 11, color: "#484F58", fontFamily: "'JetBrains Mono',monospace" }}>v5.0 — Family Office</span>
           {mod && <span style={{ fontSize: 10, color: "#D29922", background: "#2D2200", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>● modified</span>}
-          {levOn && <span style={{ fontSize: 10, color: "#F85149", background: "#3D1117", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>⚡{levR}x {assets[Math.min(levIdx, n - 1)]?.name}</span>}
+          {levOn && (() => { const lKeys = Object.keys(levRatios).filter(k => levRatios[k] > 1); const summary = lKeys.length === 0 ? "ON" : lKeys.length <= 2 ? lKeys.map(k => `${assets[+k]?.name}:${levRatios[k]}x`).join(" ") : `${lKeys.length} assets`; return <span style={{ fontSize: 10, color: "#F85149", background: "#3D1117", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>⚡ {summary}</span> })()}
           {cstOn && <span style={{ fontSize: 10, color: "#58A6FF", background: "#0D2240", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>🔒 constraints</span>}
         </div>
         <div style={{ display: "flex", gap: 2, marginBottom: 20, marginTop: 16, flexWrap: "wrap" }}>
@@ -836,25 +837,41 @@ export default function App() {
 {/* ═══ LEVERAGE ═══ */}
 {tab === "leverage" && (
   <div style={box}>
-    <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>⚡ Leverage</h3>
-    <button onClick={() => setLevOn(!levOn)} style={{ padding: "8px 16px", fontSize: 12, fontFamily: "'JetBrains Mono',monospace", background: levOn ? "#3D1117" : "#21262D", border: `1px solid ${levOn ? "#F85149" : "#30363D"}`, color: levOn ? "#F85149" : "#C9D1D9", borderRadius: 6, cursor: "pointer", fontWeight: 600, marginBottom: 16 }}>{levOn ? "Desactivar" : "Activar"}</button>
-    {levOn && (
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <div>
-          <div style={{ ...micro, marginBottom: 8 }}>Asset</div>
-          {assets.map((ac, i) => (<button key={ac.id} onClick={() => setLevIdx(i)} style={{ display: "block", width: "100%", padding: "5px 10px", fontSize: 11, textAlign: "left", background: i === levIdx ? "#21262D" : "transparent", border: `1px solid ${i === levIdx ? ac.color : "transparent"}`, borderRadius: 5, color: i === levIdx ? "#F0F6FC" : "#6E7681", cursor: "pointer", marginBottom: 3 }}><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: ac.color, marginRight: 8 }} />{ac.name}</button>))}
-        </div>
-        <div>
-          <div style={{ ...micro, marginBottom: 8 }}>Ratio: {levR}x</div>
-          <input type="range" min="1" max="3" step=".1" value={levR} onChange={e => setLevR(+e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
-          <div style={{ ...micro, marginBottom: 8 }}>Costo: {bc}%</div>
-          <input type="range" min="2" max="8" step=".25" value={bc} onChange={e => setBc(+e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
-          <div style={{ padding: 12, background: "#0D1117", borderRadius: 6, border: "1px solid #21262D", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            {[{ l: "E[R]", v: `${stats.ret.toFixed(1)}%`, c: "#3FB950" }, { l: "Vol", v: `${stats.vol.toFixed(1)}%`, c: "#D29922" }, { l: "VaR5", v: `${stats.var5.toFixed(1)}%`, c: stats.var5 < 0 ? "#F85149" : "#3FB950" }, { l: "Exposure", v: `${(stats.totalExposure * 100).toFixed(0)}%`, c: "#F85149" }].map(m => (<div key={m.l}><div style={{ fontSize: 9, color: "#484F58" }}>{m.l}</div><div style={{ fontSize: 14, fontWeight: 700, color: m.c, fontFamily: "'JetBrains Mono',monospace" }}>{m.v}</div></div>))}
-          </div>
-        </div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>⚡ Leverage</h3>
+      <button onClick={() => setLevOn(!levOn)} style={{ padding: "6px 14px", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", background: levOn ? "#3D1117" : "#21262D", border: `1px solid ${levOn ? "#F85149" : "#30363D"}`, color: levOn ? "#F85149" : "#C9D1D9", borderRadius: 6, cursor: "pointer", fontWeight: 600 }}>{levOn ? "Desactivar" : "Activar"}</button>
+    </div>
+    {levOn && (<>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ ...micro, marginBottom: 8 }}>Costo de fondeo: {bc}%</div>
+        <input type="range" min="2" max="8" step=".25" value={bc} onChange={e => setBc(+e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
       </div>
-    )}
+      <div style={{ marginBottom: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={() => setLevRatios(Object.fromEntries(assets.map((_, i) => [i, 1.5])))} style={{ padding: "4px 10px", fontSize: 10, background: "#3D1117", border: "1px solid #F85149", borderRadius: 4, color: "#F85149", cursor: "pointer" }}>All 1.5x</button>
+        <button onClick={() => setLevRatios(Object.fromEntries(assets.map((_, i) => [i, 2])))} style={{ padding: "4px 10px", fontSize: 10, background: "#3D1117", border: "1px solid #F85149", borderRadius: 4, color: "#F85149", cursor: "pointer" }}>All 2x</button>
+        <button onClick={() => setLevRatios({})} style={{ padding: "4px 10px", fontSize: 10, background: "#21262D", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", cursor: "pointer" }}>Reset (1x)</button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+        {assets.map((ac, i) => { const r = levRatios[i] || 1; const isLev = r > 1; return (
+          <div key={ac.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px", background: isLev ? "#3D1117" : "#0D1117", border: `1px solid ${isLev ? "#F85149" : "#21262D"}`, borderRadius: 6 }}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: ac.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, minWidth: 90, color: isLev ? "#F0F6FC" : "#6E7681" }}>{ac.name}</span>
+            <input type="range" min="1" max="3" step=".1" value={r} onChange={e => setLevRatios(p => ({ ...p, [i]: +e.target.value }))} style={{ flex: 1, height: 4 }} />
+            <span style={{ fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono',monospace", color: isLev ? "#F85149" : "#484F58", minWidth: 36, textAlign: "right" }}>{r.toFixed(1)}x</span>
+          </div>
+        ) })}
+      </div>
+      <div style={{ padding: 12, background: "#0D1117", borderRadius: 8, border: "1px solid #21262D" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+          {[{ l: "E[R]", v: `${stats.ret.toFixed(1)}%`, c: "#3FB950" }, { l: "Vol", v: `${stats.vol.toFixed(1)}%`, c: "#D29922" }, { l: "VaR5", v: `${stats.var5.toFixed(1)}%`, c: stats.var5 < 0 ? "#F85149" : "#3FB950" }, { l: "Exposure", v: `${(stats.totalExposure * 100).toFixed(0)}%`, c: "#F85149" }].map(m => (<div key={m.l}><div style={{ fontSize: 9, color: "#484F58" }}>{m.l}</div><div style={{ fontSize: 16, fontWeight: 700, color: m.c, fontFamily: "'JetBrains Mono',monospace" }}>{m.v}</div></div>))}
+        </div>
+        {Object.keys(levRatios).filter(k => levRatios[k] > 1).length > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #21262D", fontSize: 10, color: "#8B949E" }}>
+            Apalancados: {Object.keys(levRatios).filter(k => levRatios[k] > 1).map(k => `${assets[+k]?.name} ${levRatios[k]}x`).join(", ")}
+          </div>
+        )}
+      </div>
+    </>)}
   </div>
 )}
 
