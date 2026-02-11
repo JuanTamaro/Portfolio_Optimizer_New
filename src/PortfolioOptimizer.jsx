@@ -180,7 +180,47 @@ const cMin = (locked, i) => { const c = locked[i]; if (!c) return 0; if (c.type 
 const cMax = (locked, i) => { const c = locked[i]; if (!c) return 100; if (c.type === 'fixed') return c.val; if (c.type === 'max' || c.type === 'range') return c.max ?? 100; return 100; };
 const cLabel = (locked, i) => { const c = locked[i]; if (!c) return ""; if (c.type === 'fixed') return `=${c.val}%`; if (c.type === 'min') return `≥${c.min}%`; if (c.type === 'max') return `≤${c.max}%`; if (c.type === 'range') return `${c.min}-${c.max}%`; return ""; };
 
+// ─── AUTH GATE ─────────────────────────────────────────────
+const PW_HASH = "f9589fb8cdd87cc38fa8c5d4022d9bc8b53e9690c0f16e0696020b0a316e3de0";
+async function sha256(msg) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function AuthGate({ children }) {
+  const [ok, setOk] = useState(() => typeof sessionStorage !== "undefined" && sessionStorage.getItem("po_auth") === "1");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState(false);
+  const tryLogin = async () => {
+    const h = await sha256(pw);
+    if (h === PW_HASH) { setOk(true); try { sessionStorage.setItem("po_auth", "1"); } catch {} }
+    else { setErr(true); setTimeout(() => setErr(false), 1500); }
+  };
+  if (ok) return children;
+  return (
+    <div style={{ minHeight: "100vh", background: "#0D1117", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "#161B22", border: "1px solid #21262D", borderRadius: 12, padding: 40, width: 340, textAlign: "center" }}>
+        <div style={{ fontSize: 28, marginBottom: 8 }}>🔒</div>
+        <h2 style={{ color: "#F0F6FC", fontSize: 16, fontWeight: 600, margin: "0 0 4px" }}>Portfolio Optimizer</h2>
+        <p style={{ color: "#6E7681", fontSize: 11, margin: "0 0 20px" }}>Ingresá la contraseña para continuar</p>
+        <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()}
+          placeholder="Contraseña" autoFocus
+          style={{ width: "100%", padding: "10px 14px", background: "#0D1117", border: `1px solid ${err ? "#F85149" : "#30363D"}`, borderRadius: 6, color: "#F0F6FC", fontSize: 13, fontFamily: "'JetBrains Mono',monospace", outline: "none", boxSizing: "border-box", marginBottom: 12, transition: "border .2s" }} />
+        <button onClick={tryLogin}
+          style={{ width: "100%", padding: "10px 0", background: "#238636", border: "none", borderRadius: 6, color: "#F0F6FC", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          Ingresar
+        </button>
+        {err && <p style={{ color: "#F85149", fontSize: 11, marginTop: 10 }}>Contraseña incorrecta</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  return <AuthGate><AppInner /></AuthGate>;
+}
+
+function AppInner() {
   const [assets, setAssets] = useState(INIT_ASSETS.map(a => ({ ...a })));
   const [corr, setCorr] = useState(INIT_CORR.map(r => [...r]));
   const [weights, setWeights] = useState([5, 15, 30, 10, 10, 10, 5, 15]);
