@@ -6,7 +6,7 @@ const INIT_ASSETS = [
   { id:"fixed_income",name:"Fixed Income",color:"#2E7D6B",expectedReturn:5,annualizedVol:5,description:"US Agg / IG Bonds",liquid:true },
   { id:"equity",name:"Equity",color:"#C75B39",expectedReturn:12,annualizedVol:16.5,description:"Global Equities",liquid:true },
   { id:"hedge_funds",name:"Hedge Funds",color:"#8B6DAF",expectedReturn:10,annualizedVol:6,description:"HFRI FW Composite",liquid:false },
-  { id:"gold",name:"Oro",color:"#D4A843",expectedReturn:12,annualizedVol:24.5,description:"Oro físico + mineras",liquid:true },
+  { id:"gold",name:"Gold",color:"#D4A843",expectedReturn:12,annualizedVol:24.5,description:"Physical gold + miners",liquid:true },
   { id:"private_equity",name:"Private Equity",color:"#3D4F7C",expectedReturn:13.5,annualizedVol:15,description:"Cambridge (de-smoothed)",liquid:false },
   { id:"real_estate",name:"Real Estate",color:"#A0522D",expectedReturn:10,annualizedVol:6,description:"REITs / REOCs",liquid:false },
   { id:"bitcoin",name:"Bitcoin",color:"#F7931A",expectedReturn:20,annualizedVol:54,description:"BTC spot",liquid:true },
@@ -45,28 +45,79 @@ function genFrontier(assets, corr, cnt, cst) {
   const pts = [], n = assets.length;
   const { locked, maxIlliquid, active } = cst || {};
   const lk = locked ? Object.keys(locked).map(Number) : [];
-  const ls = lk.reduce((s, k) => s + (locked[k] || 0), 0);
-  const fi = Array.from({ length: n }, (_, i) => i).filter(i => !lk.includes(i));
-  for (let k = 0; k < cnt; k++) {
-    let w;
-    if (active && lk.length > 0) {
-      const raw = fi.map(() => Math.random()), rs = raw.reduce((a, b) => a + b, 0);
-      const ft = Math.max(0, (100 - ls)) / 100;
-      w = Array(n).fill(0);
-      lk.forEach(i => { w[i] = (locked[i] || 0) / 100 });
-      fi.forEach((f, r) => { w[f] = (raw[r] / rs) * ft });
-    } else {
-      const raw = Array.from({ length: n }, () => Math.random());
-      const s = raw.reduce((a, b) => a + b, 0);
-      w = raw.map(x => x / s);
+  const fixedIdx = lk.filter(k => locked[k]?.type === 'fixed');
+  const fixedSum = fixedIdx.reduce((s, k) => s + (locked[k]?.val || 0), 0);
+  const freeIdx = Array.from({ length: n }, (_, i) => i).filter(i => !fixedIdx.includes(i));
+
+  const clampAndCheck = (w) => {
+    // Enforce min/max/range constraints
+    if (active && locked) {
+      for (const k of lk) {
+        const c = locked[k]; if (!c) continue;
+        const pct = w[k] * 100;
+        if (c.type === 'min' && pct < (c.min || 0)) return null;
+        if (c.type === 'max' && pct > (c.max ?? 100)) return null;
+        if (c.type === 'range' && (pct < (c.min || 0) || pct > (c.max ?? 100))) return null;
+      }
     }
     if (active && maxIlliquid != null) {
       const il = assets.reduce((s, a, i) => s + (a.liquid ? 0 : w[i] * 100), 0);
-      if (il > maxIlliquid) continue;
+      if (il > maxIlliquid) return null;
     }
     const { ret, vol } = pStats(w, assets, corr);
-    pts.push({ ret, vol, weights: w });
+    return { ret, vol, weights: w };
+  };
+
+  const tryAdd = (w) => { const p = clampAndCheck(w); if (p) pts.push(p); };
+
+  // 1) Edge portfolios
+  for (let i = 0; i < n; i++) {
+    if (active && fixedIdx.length > 0) {
+      if (fixedIdx.includes(i)) continue;
+      const w = Array(n).fill(0);
+      fixedIdx.forEach(k => { w[k] = (locked[k]?.val || 0) / 100 });
+      w[i] = Math.max(0, (100 - fixedSum)) / 100;
+      tryAdd(w);
+    } else {
+      const w = Array(n).fill(0); w[i] = 1; tryAdd(w);
+    }
   }
+
+  // 2) Pairwise blends
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    for (let a = 0; a <= 10; a++) {
+      const wi = a / 10, wj = 1 - wi;
+      if (active && fixedIdx.length > 0) {
+        if (fixedIdx.includes(i) || fixedIdx.includes(j)) continue;
+        const w = Array(n).fill(0);
+        fixedIdx.forEach(k => { w[k] = (locked[k]?.val || 0) / 100 });
+        const rem = Math.max(0, (100 - fixedSum)) / 100;
+        w[i] = wi * rem; w[j] = wj * rem;
+        tryAdd(w);
+      } else {
+        const w = Array(n).fill(0); w[i] = wi; w[j] = wj; tryAdd(w);
+      }
+    }
+  }
+
+  // 3) Random portfolios with varying concentration
+  for (let k = 0; k < cnt; k++) {
+    let w;
+    const alpha = k < cnt * 0.3 ? 0.1 : k < cnt * 0.6 ? 0.5 : 1.0;
+    if (active && fixedIdx.length > 0) {
+      const raw = freeIdx.map(() => Math.pow(Math.random(), 1 / alpha)), rs = raw.reduce((a, b) => a + b, 0);
+      const ft = Math.max(0, (100 - fixedSum)) / 100;
+      w = Array(n).fill(0);
+      fixedIdx.forEach(i => { w[i] = (locked[i]?.val || 0) / 100 });
+      freeIdx.forEach((f, r) => { w[f] = (raw[r] / rs) * ft });
+    } else {
+      const raw = Array.from({ length: n }, () => Math.pow(Math.random(), 1 / alpha));
+      const s = raw.reduce((a, b) => a + b, 0);
+      w = raw.map(x => x / s);
+    }
+    tryAdd(w);
+  }
+
   const bk = {};
   for (const p of pts) { const b = Math.round(p.vol * 2) / 2; if (!bk[b] || p.ret > bk[b].ret) bk[b] = p; }
   return { points: pts, frontier: Object.values(bk).sort((a, b) => a.vol - b.vol) };
@@ -104,6 +155,14 @@ const NF = ({ value, onChange, color, width, step, min, max, disabled }) => (
     onFocus={e => { e.target.style.borderColor = "#58A6FF" }} onBlur={e => { e.target.style.borderColor = "#30363D" }} />
 );
 
+// Constraint helpers: locked[i] = { type: 'fixed'|'min'|'max'|'range', val?, min?, max? }
+const cHas = (locked, i) => locked[i] !== undefined;
+const cIsFixed = (locked, i) => locked[i]?.type === 'fixed';
+const cFixedVal = (locked, i) => cIsFixed(locked, i) ? locked[i].val : undefined;
+const cMin = (locked, i) => { const c = locked[i]; if (!c) return 0; if (c.type === 'fixed') return c.val; if (c.type === 'min' || c.type === 'range') return c.min || 0; return 0; };
+const cMax = (locked, i) => { const c = locked[i]; if (!c) return 100; if (c.type === 'fixed') return c.val; if (c.type === 'max' || c.type === 'range') return c.max ?? 100; return 100; };
+const cLabel = (locked, i) => { const c = locked[i]; if (!c) return ""; if (c.type === 'fixed') return `=${c.val}%`; if (c.type === 'min') return `≥${c.min}%`; if (c.type === 'max') return `≤${c.max}%`; if (c.type === 'range') return `${c.min}-${c.max}%`; return ""; };
+
 export default function App() {
   const [assets, setAssets] = useState(INIT_ASSETS.map(a => ({ ...a })));
   const [corr, setCorr] = useState(INIT_CORR.map(r => [...r]));
@@ -126,7 +185,7 @@ export default function App() {
     { id: "padre", name: "Padre", portfolioId: null, value: 1000000, parentId: null, inheritPct: 0 },
   ]);
   const [activeMemberId, setActiveMemberId] = useState("padre");
-  const [hovPt, setHovPt] = useState(null);
+  const [fShow, setFShow] = useState({ editor: true, assets: true, saved: true, members: true, familia: true });
 
   const svgRef = useRef(null);
   const n = assets.length;
@@ -160,6 +219,7 @@ export default function App() {
   const frontier = useMemo(() => showF ? genFrontier(assets, corr, cstOn ? 20000 : 10000, fCst) : null, [showF, assets, corr, fCst, cstOn]);
   const illPct = useMemo(() => assets.reduce((s, a, i) => s + (a.liquid ? 0 : nw[i] * 100), 0), [assets, nw]);
   const liqPct = 100 - illPct;
+
   const savedStats = useMemo(() => saved.map(s => {
     const sw = s.weights.map(w => w / 100);
     return { ...s, ...pStats(sw, assets, corr) };
@@ -206,6 +266,29 @@ export default function App() {
     return { members: mems, aggW, aggVal, aggStats };
   }, [members, assets, corr, getMemberConsolidated, n]);
 
+  // When a family member is active and in family/risk tab, show their consolidated stats
+  const activeConsStats = useMemo(() => {
+    if (tab !== "family" && tab !== "risk") return null;
+    const m = members.find(x => x.id === activeMemberId);
+    if (!m || !m.portfolioId) return null;
+    const c = getMemberConsolidated(m.id);
+    if (c.totalValue <= 0) return null;
+    const cw = c.consWeights;
+    const cs = c.consStats;
+    let tv = 0;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++)
+      tv += cw[i] * cw[j] * assets[i].annualizedVol * assets[j].annualizedVol * corr[i][j] / 10000;
+    const pv = Math.sqrt(Math.max(0, tv));
+    const rb = assets.map((ac, i) => {
+      let mrc = 0;
+      for (let j = 0; j < n; j++) mrc += cw[j] * ac.annualizedVol * assets[j].annualizedVol * corr[i][j] / 10000;
+      mrc = mrc / (pv + 1e-12);
+      const rc = cw[i] * mrc;
+      return { ...ac, idx: i, mrc, rc, pctRisk: (rc / (pv + 1e-12)) * 100, weight: cw[i] * 100 };
+    });
+    return { name: m.name, stats: cs, riskBudget: rb, weights: cw };
+  }, [tab, activeMemberId, members, assets, corr, n, getMemberConsolidated]);
+
   // Handlers
   const setW = (idx, val) => { const nws = [...weights]; nws[idx] = Math.max(0, Math.min(100, Number(val))); setWeights(nws) };
   const updAsset = (idx, f, val) => { setAssets(p => p.map((a, i) => i === idx ? { ...a, [f]: typeof val === 'boolean' ? val : Number(val) } : a)); setMod(true); setShowF(false) };
@@ -226,8 +309,22 @@ export default function App() {
     setSaved(p => p.map(s => ({ ...s, weights: s.weights.filter((_, i) => i !== idx) })));
     if (levIdx >= idx && levIdx > 0) setLevIdx(p => Math.max(0, p - (idx <= p ? 1 : 0))); setShowF(false);
   };
-  const applyERC = () => setWeights(ercW.map(w => Math.round(w * 1000) / 10));
-  const toggleLock = idx => { setLocked(p => { const nl = { ...p }; if (nl[idx] !== undefined) delete nl[idx]; else nl[idx] = weights[idx]; return nl }); setShowF(false) };
+  const applyERC = () => {
+    const fixedIdx = Object.keys(locked).map(Number).filter(k => cIsFixed(locked, k));
+    if (fixedIdx.length === 0 && Object.keys(locked).length === 0) { setWeights(ercW.map(w => Math.round(w * 1000) / 10)); return; }
+    const excl = [...ercExcl, ...fixedIdx];
+    const ew = calcERC(assets, corr, excl);
+    const fixedSum = fixedIdx.reduce((s, k) => s + (locked[k]?.val || 0), 0);
+    const freeIdx = assets.map((_, i) => i).filter(i => !fixedIdx.includes(i));
+    const freeSum = freeIdx.reduce((s, i) => s + ew[i], 0);
+    const nws = assets.map((_, i) => {
+      if (fixedIdx.includes(i)) return locked[i]?.val || 0;
+      const raw = freeSum > 0 ? (ew[i] / freeSum) * (100 - fixedSum) : 0;
+      return Math.max(cMin(locked, i), Math.min(cMax(locked, i), raw));
+    });
+    setWeights(nws.map(w => Math.round(w * 10) / 10));
+  };
+  const setCst = (idx, cst) => { setLocked(p => { const nl = { ...p }; if (cst === null) delete nl[idx]; else nl[idx] = cst; return nl }); setShowF(false) };
   const toggleCst = v => { setCstOn(v); setShowF(false) };
   const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; setSaved(p => [...p, { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[p.length % SAVED_COLORS.length], constraints: { locked: { ...locked }, maxIll, cstOn } }]); setSaveName("") };
   const removeSaved = id => { setSaved(p => p.filter(s => s.id !== id)); setMembers(p => p.map(m => m.portfolioId === id ? { ...m, portfolioId: null } : m)) };
@@ -258,8 +355,11 @@ export default function App() {
             <button key={t.id} onClick={() => { setTab(t.id); if (t.id === "frontier") setShowF(true) }} style={pill(tab === t.id)}>{t.l}</button>
           ))}
         </div>
+        {activeConsStats && <div style={{ marginBottom: 8, padding: "6px 12px", background: "#0D2240", borderRadius: 6, border: "1px solid #58A6FF", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "#58A6FF" }}>
+          Showing consolidated: <span style={{ fontWeight: 700, color: "#F0F6FC" }}>{activeConsStats.name}</span>
+        </div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 20 }}>
-          {[{ l: "E[Return]", v: `${stats.ret.toFixed(1)}%`, c: "#3FB950" }, { l: "Vol", v: `${stats.vol.toFixed(1)}%`, c: "#D29922" }, { l: "VaR 5%", v: `${stats.var5.toFixed(1)}%`, c: stats.var5 < 0 ? "#F85149" : "#3FB950" }, { l: "Sharpe(rf=3.5%)", v: ((stats.ret - 3.5) / (stats.vol + 1e-12)).toFixed(2), c: "#58A6FF" }, { l: "Liquid", v: `${liqPct.toFixed(0)}%`, c: liqPct >= (100 - maxIll) ? "#3FB950" : "#F85149" }, { l: "Exposure", v: levOn ? `${(stats.totalExposure * 100).toFixed(0)}%` : "100%", c: levOn && stats.totalExposure > 1 ? "#F85149" : "#8B949E" }].map(s => (
+          {(() => { const ds = activeConsStats ? activeConsStats.stats : stats; const dSharpe = ((ds.ret - 3.5) / (ds.vol + 1e-12)).toFixed(2); return [{ l: "E[Return]", v: `${ds.ret.toFixed(1)}%`, c: "#3FB950" }, { l: "Vol", v: `${ds.vol.toFixed(1)}%`, c: "#D29922" }, { l: "VaR 5%", v: `${ds.var5.toFixed(1)}%`, c: ds.var5 < 0 ? "#F85149" : "#3FB950" }, { l: "Sharpe(rf=3.5%)", v: dSharpe, c: "#58A6FF" }, { l: "Liquid", v: `${liqPct.toFixed(0)}%`, c: liqPct >= (100 - maxIll) ? "#3FB950" : "#F85149" }, { l: "Exposure", v: levOn ? `${(stats.totalExposure * 100).toFixed(0)}%` : "100%", c: levOn && stats.totalExposure > 1 ? "#F85149" : "#8B949E" }] })().map(s => (
             <div key={s.l} style={{ background: "#161B22", border: "1px solid #21262D", borderRadius: 8, padding: "12px 10px" }}>
               <div style={{ ...micro, marginBottom: 4, fontSize: 9 }}>{s.l}</div>
               <div style={{ fontSize: 17, fontWeight: 700, color: s.c, fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
@@ -282,16 +382,26 @@ export default function App() {
               <div style={{ width: 10, height: 10, borderRadius: 3, background: ac.color }} />
               <span style={{ fontSize: 12, fontWeight: 500, color: hov === i ? "#F0F6FC" : "#C9D1D9" }}>{ac.name}</span>
               {!ac.liquid && <span style={{ fontSize: 8, color: "#D29922", background: "#2D2200", padding: "1px 4px", borderRadius: 3 }}>ILL</span>}
-              {locked[i] !== undefined && <span style={{ fontSize: 8, color: "#58A6FF", background: "#0D2240", padding: "1px 4px", borderRadius: 3 }}>🔒</span>}
+              {cHas(locked, i) && <span style={{ fontSize: 8, color: "#58A6FF", background: "#0D2240", padding: "1px 4px", borderRadius: 3 }}>{cIsFixed(locked, i) ? "🔒" : "📏"} {cLabel(locked, i)}</span>}
             </div>
-            <input type="number" value={weights[i]} onChange={e => setW(i, e.target.value)} disabled={locked[i] !== undefined} style={{ width: 50, padding: "3px 5px", background: locked[i] !== undefined ? "#21262D" : "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: locked[i] !== undefined ? "#484F58" : "#F0F6FC", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", textAlign: "right" }} />
+            <input type="number" value={weights[i]} onChange={e => setW(i, e.target.value)} disabled={cIsFixed(locked, i)} style={{ width: 50, padding: "3px 5px", background: cIsFixed(locked, i) ? "#21262D" : "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: cIsFixed(locked, i) ? "#484F58" : "#F0F6FC", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", textAlign: "right" }} />
           </div>
-          <input type="range" min="0" max="60" step=".5" value={weights[i]} onChange={e => setW(i, e.target.value)} disabled={locked[i] !== undefined} style={{ width: "100%", height: 4, appearance: "none", background: `linear-gradient(to right,${ac.color} ${(weights[i] / 60) * 100}%,#21262D ${(weights[i] / 60) * 100}%)`, borderRadius: 2, outline: "none", cursor: locked[i] !== undefined ? "not-allowed" : "pointer", opacity: locked[i] !== undefined ? .5 : 1 }} />
+          <input type="range" min="0" max="60" step=".5" value={weights[i]} onChange={e => setW(i, e.target.value)} disabled={cIsFixed(locked, i)} style={{ width: "100%", height: 4, appearance: "none", background: `linear-gradient(to right,${ac.color} ${(weights[i] / 60) * 100}%,#21262D ${(weights[i] / 60) * 100}%)`, borderRadius: 2, outline: "none", cursor: cIsFixed(locked, i) ? "not-allowed" : "pointer", opacity: cIsFixed(locked, i) ? .5 : 1 }} />
         </div>
       ))}
       <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #21262D" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-          <button onClick={() => setWeights(Array(n).fill(+(100 / n).toFixed(1)))} style={{ padding: "5px 10px", fontSize: 11, background: "#21262D", border: "1px solid #30363D", borderRadius: 5, color: "#C9D1D9", cursor: "pointer" }}>Equal Weight</button>
+          <button onClick={() => {
+            const fixedIdx = Object.keys(locked).map(Number).filter(k => cIsFixed(locked, k));
+            if (fixedIdx.length === 0 && Object.keys(locked).length === 0) { setWeights(Array(n).fill(+(100 / n).toFixed(1))); return; }
+            const fixedSum = fixedIdx.reduce((s, k) => s + (locked[k]?.val || 0), 0);
+            const freeCount = n - fixedIdx.length;
+            const each = freeCount > 0 ? +((100 - fixedSum) / freeCount).toFixed(1) : 0;
+            setWeights(assets.map((_, i) => {
+              if (fixedIdx.includes(i)) return locked[i]?.val || 0;
+              return Math.max(cMin(locked, i), Math.min(cMax(locked, i), each));
+            }));
+          }} style={{ padding: "5px 10px", fontSize: 11, background: "#21262D", border: "1px solid #30363D", borderRadius: 5, color: "#C9D1D9", cursor: "pointer" }}>Equal Weight</button>
           <button onClick={applyERC} style={{ padding: "5px 10px", fontSize: 11, background: "#1F3A2D", border: "1px solid #238636", borderRadius: 5, color: "#3FB950", cursor: "pointer", fontWeight: 600 }}>ERC (ex zero-vol)</button>
         </div>
         <div style={{ ...micro, marginBottom: 6, marginTop: 14 }}>Portfolios Guardados</div>
@@ -419,11 +529,18 @@ export default function App() {
         const sw = sp.weights.map(w => w / 100);
         // Check locked constraints
         if (cst.locked) {
-          Object.entries(cst.locked).forEach(([idx, fixedVal]) => {
+          Object.entries(cst.locked).forEach(([idx, constraint]) => {
             const i = Number(idx);
             const actual = sp.weights[i];
-            if (actual !== undefined && Math.abs(actual - fixedVal) > 0.5) {
-              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería ser ${fixedVal}% (es ${actual.toFixed(1)}%)`, type: "lock" });
+            if (actual === undefined || !constraint) return;
+            if (constraint.type === 'fixed' && Math.abs(actual - constraint.val) > 0.5) {
+              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería ser ${constraint.val}% (es ${actual.toFixed(1)}%)`, type: "lock" });
+            } else if (constraint.type === 'min' && actual < (constraint.min || 0) - 0.5) {
+              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería ser ≥${constraint.min}% (es ${actual.toFixed(1)}%)`, type: "min" });
+            } else if (constraint.type === 'max' && actual > (constraint.max ?? 100) + 0.5) {
+              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería ser ≤${constraint.max}% (es ${actual.toFixed(1)}%)`, type: "max" });
+            } else if (constraint.type === 'range' && (actual < (constraint.min || 0) - 0.5 || actual > (constraint.max ?? 100) + 0.5)) {
+              warnings.push({ member: m.name, portfolio: sp.name, msg: `${assets[i]?.name || "Asset " + i} debería estar en ${constraint.min}-${constraint.max}% (es ${actual.toFixed(1)}%)`, type: "range" });
             }
           });
         }
@@ -490,7 +607,7 @@ export default function App() {
                     <div style={{ fontSize: 10, color: "#F85149", fontWeight: 600 }}>⚠ Valor consolidado menor al piso de herencia</div>
                     {breaches.map(b => <div key={b.name} style={{ fontSize: 10, color: "#F85149" }}>{b.name}: {fmt(b.have)} &lt; mín {fmt(b.need)}</div>)}
                   </div>
-                ) : <div style={{ marginTop: 8, padding: 6, background: "#1F3A2D", borderRadius: 6, fontSize: 10, color: "#3FB950" }}>✓ OK: consolidado supera piso de herencia en todos los assets</div>;
+                ) : null;
               })()}
             </div>
           )}
@@ -508,15 +625,46 @@ export default function App() {
       <button onClick={() => toggleCst(!cstOn)} style={{ padding: "6px 14px", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", background: cstOn ? "#0D2240" : "#21262D", border: `1px solid ${cstOn ? "#58A6FF" : "#30363D"}`, color: cstOn ? "#58A6FF" : "#C9D1D9", borderRadius: 6, cursor: "pointer", fontWeight: 600 }}>{cstOn ? "ON" : "Activar"}</button>
     </div>
     <div style={{ marginBottom: 20 }}>
-      <div style={{ ...micro, marginBottom: 8 }}>Fijar Assets</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 8 }}>
-        {assets.map((ac, i) => (
-          <div key={ac.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: locked[i] !== undefined ? "#0D2240" : "#0D1117", border: `1px solid ${locked[i] !== undefined ? "#58A6FF" : "#21262D"}`, borderRadius: 6 }}>
-            <button onClick={() => toggleLock(i)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 0 }}>{locked[i] !== undefined ? "🔒" : "🔓"}</button>
-            <div style={{ width: 8, height: 8, borderRadius: 2, background: ac.color }} /><span style={{ fontSize: 11, flex: 1 }}>{ac.name}</span>
-            {locked[i] !== undefined ? <NF value={locked[i]} width={48} onChange={e => { const v = Math.max(0, Math.min(100, +e.target.value)); setLocked(p => ({ ...p, [i]: v })); setW(i, v) }} color="#58A6FF" /> : <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#484F58" }}>{weights[i].toFixed(1)}%</span>}
+      <div style={{ ...micro, marginBottom: 8 }}>Asset Constraints</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {assets.map((ac, i) => { const c = locked[i]; const active = c !== undefined; const tp = c?.type || 'none'; return (
+          <div key={ac.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: active ? "#0D2240" : "#0D1117", border: `1px solid ${active ? "#58A6FF" : "#21262D"}`, borderRadius: 6, flexWrap: "wrap" }}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: ac.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, minWidth: 80 }}>{ac.name}</span>
+            <select value={tp} onChange={e => {
+              const v = e.target.value;
+              if (v === 'none') setCst(i, null);
+              else if (v === 'fixed') setCst(i, { type: 'fixed', val: weights[i] });
+              else if (v === 'min') setCst(i, { type: 'min', min: 0 });
+              else if (v === 'max') setCst(i, { type: 'max', max: 50 });
+              else if (v === 'range') setCst(i, { type: 'range', min: 5, max: 30 });
+            }} style={{ padding: "3px 6px", background: "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", fontSize: 10, outline: "none" }}>
+              <option value="none">Sin constraint</option>
+              <option value="fixed">Fijo (=)</option>
+              <option value="min">Mínimo (≥)</option>
+              <option value="max">Máximo (≤)</option>
+              <option value="range">Rango (↔)</option>
+            </select>
+            {tp === 'fixed' && <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 9, color: "#58A6FF" }}>=</span>
+              <NF value={c.val} width={48} step={1} onChange={e => { const v = Math.max(0, Math.min(100, +e.target.value)); setCst(i, { ...c, val: v }); setW(i, v) }} color="#58A6FF" />
+            </div>}
+            {tp === 'min' && <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 9, color: "#3FB950" }}>≥</span>
+              <NF value={c.min || 0} width={48} step={1} onChange={e => setCst(i, { ...c, min: Math.max(0, Math.min(100, +e.target.value)) })} color="#3FB950" />
+            </div>}
+            {tp === 'max' && <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 9, color: "#D29922" }}>≤</span>
+              <NF value={c.max ?? 50} width={48} step={1} onChange={e => setCst(i, { ...c, max: Math.max(0, Math.min(100, +e.target.value)) })} color="#D29922" />
+            </div>}
+            {tp === 'range' && <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <NF value={c.min || 0} width={42} step={1} onChange={e => setCst(i, { ...c, min: Math.max(0, Math.min(c.max ?? 100, +e.target.value)) })} color="#3FB950" />
+              <span style={{ fontSize: 9, color: "#6E7681" }}>–</span>
+              <NF value={c.max ?? 50} width={42} step={1} onChange={e => setCst(i, { ...c, max: Math.max(c.min || 0, Math.min(100, +e.target.value)) })} color="#D29922" />
+            </div>}
+            <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#484F58", marginLeft: "auto" }}>{weights[i].toFixed(1)}%{active && (weights[i] < cMin(locked, i) - 0.1 || weights[i] > cMax(locked, i) + 0.1) ? <span style={{ color: "#F85149", marginLeft: 4 }}>⚠</span> : null}</span>
           </div>
-        ))}
+        ) })}
       </div>
     </div>
     <div>
@@ -537,9 +685,9 @@ export default function App() {
 {/* ═══ RISK ═══ */}
 {tab === "risk" && (
   <div style={box}>
-    <h3 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Risk Budget</h3>
+    <h3 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Risk Budget {activeConsStats ? <span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 400 }}>({activeConsStats.name} consolidado)</span> : null}</h3>
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-      <div>{riskBudget.filter(r => r.weight > .3).sort((a, b) => b.pctRisk - a.pctRisk).map(rb => (
+      <div>{(activeConsStats ? activeConsStats.riskBudget : riskBudget).filter(r => r.weight > .3).sort((a, b) => b.pctRisk - a.pctRisk).map(rb => (
         <div key={rb.id} style={{ marginBottom: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}><span style={{ fontSize: 11 }}>{rb.name}</span><span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: rb.pctRisk > rb.weight * 1.5 ? "#F85149" : rb.pctRisk < rb.weight * .5 ? "#3FB950" : "#D29922" }}>risk:{rb.pctRisk.toFixed(1)}%</span></div>
           <div style={{ height: 5, background: "#21262D", borderRadius: 3, overflow: "hidden" }}><div style={{ height: "100%", width: `${Math.min(100, Math.max(0, rb.pctRisk))}%`, background: rb.color, borderRadius: 3, transition: "width .3s" }} /></div>
@@ -559,14 +707,13 @@ export default function App() {
   const toSvgY = v => 370 - (v / 22) * 340;
   const inView = (vol, ret) => vol >= 0 && vol <= 30 && ret >= 0 && ret <= 22;
 
-  // Collect labeled points for offset calculation
+  // Collect labeled points for offset calculation (only visible ones)
   const labeledPts = [];
-  labeledPts.push({ vol: stats.vol, ret: stats.ret, name: "Editor", color: "#F85149" });
-  savedStats.forEach(s => labeledPts.push({ vol: s.vol, ret: s.ret, name: s.name, color: s.color }));
-  familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => labeledPts.push({ vol: m.consStats.vol, ret: m.consStats.ret, name: m.name, color: "#58A6FF" }));
-  if (familySummary.aggVal > 0) labeledPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret, name: "Familia", color: "#C9D1D9" });
+  if (fShow.editor) labeledPts.push({ vol: stats.vol, ret: stats.ret, name: "Editor", color: "#F85149" });
+  if (fShow.saved) savedStats.forEach(s => labeledPts.push({ vol: s.vol, ret: s.ret, name: s.name, color: s.color }));
+  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => labeledPts.push({ vol: m.consStats.vol, ret: m.consStats.ret, name: m.name, color: "#58A6FF" }));
+  if (fShow.familia && familySummary.aggVal > 0) labeledPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret, name: "Familia", color: "#C9D1D9" });
 
-  // Compute label offsets to avoid overlap
   const offsets = labeledPts.map((p, i) => {
     let ox = 10, oy = 3;
     for (let j = 0; j < i; j++) {
@@ -576,6 +723,10 @@ export default function App() {
     }
     return { ox, oy };
   });
+
+  // Offset index tracker
+  let oi = 0;
+  const nextOi = () => offsets[oi++] || { ox: 10, oy: 3 };
 
   const handleFrontierClick = e => {
     if (!frontier || !svgRef.current) return;
@@ -591,9 +742,25 @@ export default function App() {
     if (best && bd < .08) { setSelPt(best); setWeights(best.weights.map(w => Math.round(w * 1000) / 10)) }
   };
 
+  const toggleF = k => setFShow(p => ({ ...p, [k]: !p[k] }));
+  const chk = (k, label, color) => (
+    <label key={k} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color, cursor: "pointer", userSelect: "none" }}>
+      <input type="checkbox" checked={fShow[k]} onChange={() => toggleF(k)} style={{ accentColor: color, width: 12, height: 12 }} />{label}
+    </label>
+  );
+
   return (
   <div style={box}>
-    <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Frontier — Clickeá para seleccionar</h3>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 8 }}>
+      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>Frontier — Clickeá para seleccionar</h3>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {chk("editor", "Editor", "#F85149")}
+        {chk("assets", "Assets", "#8B949E")}
+        {chk("saved", "Portfolios", "#58A6FF")}
+        {chk("members", "Miembros", "#58A6FF")}
+        {chk("familia", "Familia", "#C9D1D9")}
+      </div>
+    </div>
     {cstOn && <p style={{ fontSize: 10, color: "#58A6FF", margin: "0 0 8px" }}>🔒 Constraints activos.</p>}
     {selPt && <div style={{ display: "flex", gap: 10, padding: "8px 12px", background: "#0D1117", borderRadius: 6, border: "1px solid #58A6FF", margin: "6px 0 10px", flexWrap: "wrap", alignItems: "center" }}>
       <span style={{ fontSize: 11, color: "#58A6FF", fontWeight: 600 }}>Selected:</span>
@@ -610,10 +777,6 @@ export default function App() {
         ) : null })}
       </div>
     </div>}
-    {hovPt && <div style={{ padding: "4px 10px", background: "#21262D", borderRadius: 4, fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#F0F6FC", marginBottom: 6 }}>
-      <span style={{ fontWeight: 600, color: hovPt.color }}>{hovPt.name}</span>
-      <span style={{ color: "#6E7681", marginLeft: 8 }}>Ret:{hovPt.ret.toFixed(1)}% Vol:{hovPt.vol.toFixed(1)}%</span>
-    </div>}
     {frontier && (
       <svg ref={svgRef} viewBox="0 0 700 400" style={{ width: "100%", background: "#0D1117", borderRadius: 8, border: "1px solid #21262D", cursor: "crosshair" }} onClick={handleFrontierClick}>
         {/* Grid */}
@@ -629,33 +792,31 @@ export default function App() {
         {/* CML line */}
         {levOn && (() => { const rf = bc; const bs = pStats(nw, assets, corr); const slope = (bs.ret - rf) / (bs.vol + 1e-12); const er = Math.min(22, rf + slope * 30); return <line x1={toSvgX(0)} y1={toSvgY(rf)} x2={toSvgX(30)} y2={toSvgY(er)} stroke="#F85149" strokeWidth="1.5" strokeDasharray="6 3" opacity=".5" /> })()}
         {/* Individual assets */}
-        {assets.map(ac => { if (!inView(ac.annualizedVol, ac.expectedReturn)) return null; const x = toSvgX(ac.annualizedVol); const y = toSvgY(ac.expectedReturn); return <g key={ac.id}><circle cx={x} cy={y} r="4" fill={ac.color} opacity=".6" stroke={ac.color} strokeWidth=".5" /><text x={x + 7} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono" opacity=".8">{ac.name}</text></g> })}
+        {fShow.assets && assets.map(ac => { if (!inView(ac.annualizedVol, ac.expectedReturn)) return null; const x = toSvgX(ac.annualizedVol); const y = toSvgY(ac.expectedReturn); return <g key={ac.id}><circle cx={x} cy={y} r="4" fill={ac.color} opacity=".6" stroke={ac.color} strokeWidth=".5" /><text x={x + 7} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono" opacity=".8">{ac.name}</text></g> })}
         {/* Saved portfolios */}
-        {savedStats.map(s => { if (!inView(s.vol, s.ret)) return null; const x = toSvgX(s.vol); const y = toSvgY(s.ret); return <g key={s.id} onMouseEnter={() => setHovPt({ name: s.name, ret: s.ret, vol: s.vol, color: s.color })} onMouseLeave={() => setHovPt(null)}><circle cx={x} cy={y} r="6" fill={s.color} stroke="#F0F6FC" strokeWidth="1.5" /><text x={x + 10} y={y + 3} fill={s.color} fontSize="8" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> })}
+        {fShow.saved && savedStats.map(s => { if (!inView(s.vol, s.ret)) return null; const x = toSvgX(s.vol); const y = toSvgY(s.ret); return <g key={s.id}><circle cx={x} cy={y} r="6" fill={s.color} stroke="#F0F6FC" strokeWidth="1.5" /><text x={x + 10} y={y + 3} fill={s.color} fontSize="8" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> })}
         {/* Editor (current) */}
-        {inView(stats.vol, stats.ret) && <g onMouseEnter={() => setHovPt({ name: "Editor", ret: stats.ret, vol: stats.vol, color: "#F85149" })} onMouseLeave={() => setHovPt(null)}>
+        {fShow.editor && inView(stats.vol, stats.ret) && (() => { const o = nextOi(); return <g>
           <circle cx={toSvgX(stats.vol)} cy={toSvgY(stats.ret)} r="8" fill="#F85149" stroke="#F0F6FC" strokeWidth="2" />
-          {(() => { const o = offsets[0] || { ox: 10, oy: 3 }; return <text x={toSvgX(stats.vol) + o.ox} y={toSvgY(stats.ret) + o.oy} fill="#F85149" fontSize="9" fontWeight="600" fontFamily="JetBrains Mono">Editor</text> })()}
-        </g>}
-        {/* Family members — larger, distinct shape with glow */}
-        {familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map((m, mi) => {
+          <text x={toSvgX(stats.vol) + o.ox} y={toSvgY(stats.ret) + o.oy} fill="#F85149" fontSize="9" fontWeight="600" fontFamily="JetBrains Mono">Editor</text>
+        </g> })()}
+        {/* Family members */}
+        {fShow.members && familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map((m, mi) => {
           if (!inView(m.consStats.vol, m.consStats.ret)) return null;
           const x = toSvgX(m.consStats.vol); const y = toSvgY(m.consStats.ret);
-          const oi = 1 + savedStats.length + mi;
-          const o = offsets[oi] || { ox: 12, oy: mi % 2 === 0 ? -12 : 14 };
-          return <g key={m.id} onMouseEnter={() => setHovPt({ name: m.name, ret: m.consStats.ret, vol: m.consStats.vol, color: "#58A6FF" })} onMouseLeave={() => setHovPt(null)}>
+          const o = nextOi();
+          return <g key={m.id}>
             <circle cx={x} cy={y} r="12" fill="#58A6FF" opacity=".12" />
             <rect x={x - 7} y={y - 7} width="14" height="14" rx="3" fill="#161B22" stroke="#58A6FF" strokeWidth="2.5" />
             <text x={x} y={y + 3} textAnchor="middle" fill="#58A6FF" fontSize="7" fontWeight="700" fontFamily="JetBrains Mono">{m.name.charAt(0)}</text>
             <line x1={x + 7} y1={y} x2={x + o.ox - 2} y2={y + o.oy - 3} stroke="#58A6FF" strokeWidth=".7" opacity=".5" />
             <text x={x + o.ox} y={y + o.oy} fill="#58A6FF" fontSize="8" fontWeight="700" fontFamily="JetBrains Mono">{m.name}</text>
           </g> })}
-        {/* Family aggregate — triangle */}
-        {familySummary.aggVal > 0 && inView(familySummary.aggStats.vol, familySummary.aggStats.ret) && (() => {
+        {/* Family aggregate */}
+        {fShow.familia && familySummary.aggVal > 0 && inView(familySummary.aggStats.vol, familySummary.aggStats.ret) && (() => {
           const x = toSvgX(familySummary.aggStats.vol); const y = toSvgY(familySummary.aggStats.ret);
-          const lastOi = labeledPts.length - 1;
-          const o = offsets[lastOi] || { ox: 12, oy: -10 };
-          return <g onMouseEnter={() => setHovPt({ name: "Familia Total", ret: familySummary.aggStats.ret, vol: familySummary.aggStats.vol, color: "#C9D1D9" })} onMouseLeave={() => setHovPt(null)}>
+          const o = nextOi();
+          return <g>
             <circle cx={x} cy={y} r="14" fill="#C9D1D9" opacity=".08" />
             <polygon points={`${x},${y - 9} ${x - 8},${y + 6} ${x + 8},${y + 6}`} fill="#161B22" stroke="#C9D1D9" strokeWidth="2.5" />
             <line x1={x + 8} y1={y} x2={x + o.ox - 2} y2={y + o.oy - 3} stroke="#C9D1D9" strokeWidth=".7" opacity=".5" />
@@ -666,9 +827,6 @@ export default function App() {
       </svg>
     )}
     <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 10, fontSize: 10, alignItems: "center" }}>
-      <span style={{ color: "#F85149" }}>● Editor</span>
-      {savedStats.map(s => <span key={s.id} style={{ color: s.color }}>● {s.name}</span>)}
-      <span style={{ color: "#58A6FF" }}>■ Miembros</span><span style={{ color: "#C9D1D9" }}>▲ Familia</span>
       <span style={{ color: "#D29922" }}>— Efficient Frontier</span>
     </div>
   </div>
