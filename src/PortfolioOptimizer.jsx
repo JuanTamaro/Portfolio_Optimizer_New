@@ -1,4 +1,21 @@
-import { useState, useMemo, useRef, useCallback } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect } from "react";
+
+// ─── SUPABASE (minimal fetch client — no npm dependency) ───
+const SB_URL = "https://erufkqzkslvixdergllr.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVydWZrcXprc2x2aXhkZXJnbGxyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4MTIyNDYsImV4cCI6MjA4NjM4ODI0Nn0.kNmeBTiRZ3pkLglGixy7M9yjQOgmBRMAObYQ24yMlyo";
+const sbHeaders = { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" };
+const sbFetch = async (table, method, opts = {}) => {
+  const { query = "", body } = opts;
+  const url = `${SB_URL}/rest/v1/${table}${query ? "?" + query : ""}`;
+  const res = await fetch(url, { method, headers: { ...sbHeaders, ...(opts.headers || {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (method === "GET") return res.ok ? res.json() : [];
+  return res.ok;
+};
+const sb = {
+  select: (table, query) => sbFetch(table, "GET", { query }),
+  upsert: (table, rows) => sbFetch(table, "POST", { body: rows, headers: { "Prefer": "resolution=merge-duplicates,return=minimal" } }),
+  deleteAll: (table) => sbFetch(table, "DELETE", { query: "id=neq." }),
+};
 
 // ─── DEFAULTS ───────────────────────────────────────────────
 const INIT_ASSETS = [
@@ -185,6 +202,70 @@ export default function App() {
   ]);
   const [activeMemberId, setActiveMemberId] = useState("padre");
   const [fShow, setFShow] = useState({ editor: true, assets: true, saved: true, members: true, familia: true });
+  const [dbReady, setDbReady] = useState(false);
+
+  // ─── SUPABASE: Load on mount ───
+  useEffect(() => {
+    const load = async () => {
+      try {
+        // Load assumptions
+        const aData = await sb.select("assumptions", "id=eq.1&limit=1");
+        if (aData && aData.length > 0) {
+          const a = aData[0];
+          setAssets(a.assets);
+          setCorr(a.correlation);
+          setWeights(a.assets.map(() => +(100 / a.assets.length).toFixed(1)));
+        }
+        // Load portfolios
+        const pData = await sb.select("saved_portfolios", "order=created_at.asc");
+        if (pData && pData.length > 0) {
+          setSaved(pData.map(p => ({ id: p.id, name: p.name, weights: p.weights, color: p.color, constraints: p.constraints || {} })));
+        }
+        // Load family members
+        const fData = await sb.select("family_members", "order=sort_order.asc");
+        if (fData && fData.length > 0) {
+          setMembers(fData.map(f => ({ id: f.id, name: f.name, portfolioId: f.portfolio_id, value: +f.value, parentId: f.parent_id, inheritPct: +f.inherit_pct })));
+          setActiveMemberId(fData[0].id);
+        }
+      } catch (e) { console.warn("Supabase load error:", e); }
+      setDbReady(true);
+    };
+    load();
+  }, []);
+
+  // ─── SUPABASE: Sync saved portfolios ───
+  const dbSyncSaved = useCallback(async (portfolios) => {
+    if (!dbReady) return;
+    try {
+      await sb.deleteAll("saved_portfolios");
+      if (portfolios.length > 0) {
+        await sb.upsert("saved_portfolios",
+          portfolios.map(p => ({ id: p.id, name: p.name, weights: p.weights, color: p.color, constraints: p.constraints }))
+        );
+      }
+    } catch (e) { console.warn("Sync portfolios error:", e); }
+  }, [dbReady]);
+
+  // ─── SUPABASE: Sync family members ───
+  const dbSyncMembers = useCallback(async (mems) => {
+    if (!dbReady) return;
+    try {
+      await sb.deleteAll("family_members");
+      if (mems.length > 0) {
+        await sb.upsert("family_members",
+          mems.map((m, i) => ({ id: m.id, name: m.name, portfolio_id: m.portfolioId, value: m.value, parent_id: m.parentId, inherit_pct: m.inheritPct, sort_order: i }))
+        );
+      }
+    } catch (e) { console.warn("Sync members error:", e); }
+  }, [dbReady]);
+
+  // ─── SUPABASE: Sync assumptions ───
+  const dbSyncAssumptions = useCallback(async (a, c) => {
+    if (!dbReady) return;
+    try {
+      await sb.upsert("assumptions", [{ id: 1, assets: a, correlation: c, updated_at: new Date().toISOString() }]);
+    } catch (e) { console.warn("Sync assumptions error:", e); }
+  }, [dbReady]);
 
   const svgRef = useRef(null);
   const n = assets.length;
@@ -290,23 +371,24 @@ export default function App() {
 
   // Handlers
   const setW = (idx, val) => { const nws = [...weights]; nws[idx] = Math.max(0, Math.min(100, Number(val))); setWeights(nws) };
-  const updAsset = (idx, f, val) => { setAssets(p => p.map((a, i) => i === idx ? { ...a, [f]: typeof val === 'boolean' ? val : Number(val) } : a)); setMod(true); setShowF(false) };
-  const updCorr = (i, j, val) => { const v = Math.max(-1, Math.min(1, Number(val))); setCorr(p => { const nc = p.map(r => [...r]); nc[i][j] = v; nc[j][i] = v; return nc }); setMod(true); setShowF(false) };
-  const resetAll = () => { setAssets(INIT_ASSETS.map(a => ({ ...a }))); setCorr(INIT_CORR.map(r => [...r])); setWeights([5, 15, 30, 10, 10, 10, 5, 15]); setMod(false); setShowF(false); setLocked({}) };
+  const updAsset = (idx, f, val) => { setAssets(p => { const na = p.map((a, i) => i === idx ? { ...a, [f]: typeof val === 'boolean' ? val : Number(val) } : a); dbSyncAssumptions(na, corr); return na }); setMod(true); setShowF(false) };
+  const updCorr = (i, j, val) => { const v = Math.max(-1, Math.min(1, Number(val))); setCorr(p => { const nc = p.map(r => [...r]); nc[i][j] = v; nc[j][i] = v; dbSyncAssumptions(assets, nc); return nc }); setMod(true); setShowF(false) };
+  const resetAll = () => { setAssets(INIT_ASSETS.map(a => ({ ...a }))); setCorr(INIT_CORR.map(r => [...r])); setWeights([5, 15, 30, 10, 10, 10, 5, 15]); setMod(false); setShowF(false); setLocked({}); dbSyncAssumptions(INIT_ASSETS, INIT_CORR) };
   const addAsset = () => {
     const ci = assets.length % PALETTE.length;
-    setAssets(p => [...p, { id: nid(), name: "New Asset", color: PALETTE[ci], expectedReturn: 8, annualizedVol: 15, description: "Custom", liquid: true }]);
+    const na = [...assets, { id: nid(), name: "New Asset", color: PALETTE[ci], expectedReturn: 8, annualizedVol: 15, description: "Custom", liquid: true }];
+    setAssets(na);
     setWeights(p => [...p, 5]);
-    setCorr(p => { const nn = p.length + 1; const nc = p.map(r => [...r, .1]); nc.push(Array(nn).fill(.1)); nc[nn - 1][nn - 1] = 1; return nc });
+    setCorr(p => { const nn = p.length + 1; const nc = p.map(r => [...r, .1]); nc.push(Array(nn).fill(.1)); nc[nn - 1][nn - 1] = 1; dbSyncAssumptions(na, nc); return nc });
     setSaved(p => p.map(s => ({ ...s, weights: [...s.weights, 0] })));
   };
   const removeAsset = (idx) => {
     if (assets.length <= 2) return;
-    setAssets(p => p.filter((_, i) => i !== idx)); setWeights(p => p.filter((_, i) => i !== idx));
-    setCorr(p => p.filter((_, i) => i !== idx).map(r => r.filter((_, j) => j !== idx)));
+    const na = assets.filter((_, i) => i !== idx);
+    setAssets(na); setWeights(p => p.filter((_, i) => i !== idx));
+    setCorr(p => { const nc = p.filter((_, i) => i !== idx).map(r => r.filter((_, j) => j !== idx)); dbSyncAssumptions(na, nc); return nc });
     setLocked(p => { const nl = {}; Object.keys(p).forEach(k => { const ki = +k; if (ki < idx) nl[ki] = p[k]; else if (ki > idx) nl[ki - 1] = p[k] }); return nl });
-    setSaved(p => p.map(s => ({ ...s, weights: s.weights.filter((_, i) => i !== idx) })));
-    // Re-key levRatios
+    setSaved(p => { const ns = p.map(s => ({ ...s, weights: s.weights.filter((_, i) => i !== idx) })); dbSyncSaved(ns); return ns });
     setLevRatios(p => { const nl = {}; Object.keys(p).forEach(k => { const ki = +k; if (ki < idx) nl[ki] = p[k]; else if (ki > idx) nl[ki - 1] = p[k] }); return nl });
     setShowF(false);
   };
@@ -327,13 +409,13 @@ export default function App() {
   };
   const setCst = (idx, cst) => { setLocked(p => { const nl = { ...p }; if (cst === null) delete nl[idx]; else nl[idx] = cst; return nl }); setShowF(false) };
   const toggleCst = v => { setCstOn(v); setShowF(false) };
-  const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; setSaved(p => [...p, { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[p.length % SAVED_COLORS.length], constraints: { locked: { ...locked }, maxIll, cstOn } }]); setSaveName("") };
-  const removeSaved = id => { setSaved(p => p.filter(s => s.id !== id)); setMembers(p => p.map(m => m.portfolioId === id ? { ...m, portfolioId: null } : m)) };
+  const savePortfolio = () => { const name = saveName.trim() || `Portfolio ${saved.length + 1}`; const np = { id: `sp_${Date.now()}`, name, weights: [...weights], color: SAVED_COLORS[saved.length % SAVED_COLORS.length], constraints: { locked: { ...locked }, maxIll, cstOn } }; setSaved(p => { const ns = [...p, np]; dbSyncSaved(ns); return ns }); setSaveName("") };
+  const removeSaved = id => { setSaved(p => { const ns = p.filter(s => s.id !== id); dbSyncSaved(ns); return ns }); setMembers(p => { const nm = p.map(m => m.portfolioId === id ? { ...m, portfolioId: null } : m); dbSyncMembers(nm); return nm }) };
   const loadSaved = s => setWeights([...s.weights]);
-  const addMember = (parentId) => { const id = `m_${Date.now()}`; setMembers(p => [...p, { id, name: "Hijo " + p.length, portfolioId: null, value: 500000, parentId: parentId || null, inheritPct: parentId ? 50 : 0 }]) };
-  const updMember = (id, field, val) => setMembers(p => p.map(m => m.id === id ? { ...m, [field]: val } : m));
-  const removeMember = id => { if (members.length <= 1) return; setMembers(p => p.filter(m => m.id !== id).map(m => m.parentId === id ? { ...m, parentId: null, inheritPct: 0 } : m)); if (activeMemberId === id) setActiveMemberId(members[0].id) };
-  const moveMember = (idx, dir) => { const ni = idx + dir; if (ni < 0 || ni >= members.length) return; setMembers(p => { const nm = [...p]; const tmp = nm[idx]; nm[idx] = nm[ni]; nm[ni] = tmp; return nm }) };
+  const addMember = (parentId) => { const id = `m_${Date.now()}`; setMembers(p => { const nm = [...p, { id, name: "Hijo " + p.length, portfolioId: null, value: 500000, parentId: parentId || null, inheritPct: parentId ? 50 : 0 }]; dbSyncMembers(nm); return nm }) };
+  const updMember = (id, field, val) => setMembers(p => { const nm = p.map(m => m.id === id ? { ...m, [field]: val } : m); dbSyncMembers(nm); return nm });
+  const removeMember = id => { if (members.length <= 1) return; setMembers(p => { const nm = p.filter(m => m.id !== id).map(m => m.parentId === id ? { ...m, parentId: null, inheritPct: 0 } : m); dbSyncMembers(nm); return nm }); if (activeMemberId === id) setActiveMemberId(members[0].id) };
+  const moveMember = (idx, dir) => { const ni = idx + dir; if (ni < 0 || ni >= members.length) return; setMembers(p => { const nm = [...p]; const tmp = nm[idx]; nm[idx] = nm[ni]; nm[ni] = tmp; dbSyncMembers(nm); return nm }) };
 
   const box = { background: "#161B22", border: "1px solid #21262D", borderRadius: 10, padding: 20 };
   const micro = { fontSize: 10, color: "#484F58", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase", letterSpacing: 1 };
@@ -891,7 +973,7 @@ export default function App() {
         <tbody>{assets.map((ac, i) => { const v5 = ac.expectedReturn - 1.645 * ac.annualizedVol; return (
           <tr key={ac.id} style={{ borderBottom: "1px solid #21262D" }}>
             <td style={{ padding: "6px 3px" }}><div style={{ width: 10, height: 10, borderRadius: 3, background: ac.color }} /></td>
-            <td style={{ padding: "6px 3px" }}><input value={ac.name} onChange={e => { setAssets(p => p.map((a, j) => j === i ? { ...a, name: e.target.value } : a)); setMod(true) }} style={{ background: "transparent", border: "none", color: "#F0F6FC", fontSize: 11, fontWeight: 500, outline: "none", width: 100 }} /></td>
+            <td style={{ padding: "6px 3px" }}><input value={ac.name} onChange={e => { const nv = e.target.value; setAssets(p => { const na = p.map((a, j) => j === i ? { ...a, name: nv } : a); dbSyncAssumptions(na, corr); return na }); setMod(true) }} style={{ background: "transparent", border: "none", color: "#F0F6FC", fontSize: 11, fontWeight: 500, outline: "none", width: 100 }} /></td>
             <td style={{ textAlign: "center", padding: "6px 3px" }}><NF value={ac.expectedReturn} onChange={e => updAsset(i, "expectedReturn", e.target.value)} color="#3FB950" width={52} /></td>
             <td style={{ textAlign: "center", padding: "6px 3px" }}><NF value={ac.annualizedVol} onChange={e => updAsset(i, "annualizedVol", e.target.value)} color="#D29922" width={52} /></td>
             <td style={{ textAlign: "center", padding: "6px 3px", fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: v5 < 0 ? "#F85149" : "#3FB950" }}>{v5.toFixed(1)}%</td>
@@ -917,8 +999,9 @@ export default function App() {
   </div>
 )}
 
-        <div style={{ marginTop: 20, padding: 12, background: "#0D1117", borderRadius: 8, fontSize: 10, color: "#484F58", fontFamily: "'JetBrains Mono',monospace" }}>
-          VaR 5% = E[R] - 1.645 x σ | ERC Newton (ex zero-vol) | Family: consolidado = propio + herencia% x padre | Constraint: valor en $ consolidado ≥ piso herencia | No es asesoramiento financiero.
+        <div style={{ marginTop: 20, padding: 12, background: "#0D1117", borderRadius: 8, fontSize: 10, color: "#484F58", fontFamily: "'JetBrains Mono',monospace", display: "flex", justifyContent: "space-between" }}>
+          <span>VaR 5% = E[R] - 1.645 x σ | ERC Newton (ex zero-vol) | Family: consolidado = propio + herencia% x padre | No es asesoramiento financiero.</span>
+          <span style={{ color: dbReady ? "#3FB950" : "#D29922" }}>{dbReady ? "☁ Synced" : "⏳ Loading..."}</span>
         </div>
       </div>
     </div>
