@@ -248,6 +248,9 @@ function AppInner() {
   const [activeCstId, setActiveCstId] = useState(null);
   const [allocMode, setAllocMode] = useState("%"); // "%" or "$"
   const [totalAUM, setTotalAUM] = useState(10000000); // total portfolio value for $ mode
+  const [cmpItems, setCmpItems] = useState([]); // [{ type:'portfolio'|'member', id, mode:'individual'|'consolidated' }]
+  const [cmpTarget, setCmpTarget] = useState(null); // target weights from frontier click
+  const [cmpDeltaIdx, setCmpDeltaIdx] = useState(0); // which resolved item to compute delta against
 
   // ─── SUPABASE: Load on mount ───
   useEffect(() => {
@@ -502,7 +505,7 @@ function AppInner() {
           {cstOn && <span style={{ fontSize: 10, color: "#58A6FF", background: "#0D2240", padding: "2px 8px", borderRadius: 4, fontFamily: "'JetBrains Mono',monospace" }}>🔒 constraints</span>}
         </div>
         <div style={{ display: "flex", gap: 2, marginBottom: 20, marginTop: 16, flexWrap: "wrap" }}>
-          {[{ id: "allocation", l: "Allocation" }, { id: "family", l: "👨‍👧 Family Office" }, { id: "constraints", l: "🔒 Constraints" }, { id: "risk", l: "Risk Budget" }, { id: "frontier", l: "Frontier" }, { id: "leverage", l: "⚡ Leverage" }, { id: "data", l: "⚙ Assumptions" }].map(t => (
+          {[{ id: "allocation", l: "Allocation" }, { id: "family", l: "👨‍👧 Family Office" }, { id: "constraints", l: "🔒 Constraints" }, { id: "risk", l: "Risk Budget" }, { id: "frontier", l: "Frontier" }, { id: "compare", l: "⚖ Comparar" }, { id: "leverage", l: "⚡ Leverage" }, { id: "data", l: "⚙ Assumptions" }].map(t => (
             <button key={t.id} onClick={() => { setTab(t.id); if (t.id === "frontier") setShowF(true) }} style={pill(tab === t.id)}>{t.l}</button>
           ))}
         </div>
@@ -1047,6 +1050,188 @@ function AppInner() {
   </div>
   );
 })()} 
+
+{/* ═══ COMPARE ═══ */}
+{tab === "compare" && (() => {
+  // Resolve a compare item to { name, weights (fractions), value ($ or null), stats, color }
+  const resolveItem = (item) => {
+    if (item.type === "portfolio") {
+      const sp = saved.find(s => s.id === item.id);
+      if (!sp) return null;
+      const w = sp.weights.map(v => v / 100);
+      return { name: sp.name, weights: w, value: null, stats: pStats(w, assets, corr), color: sp.color };
+    }
+    if (item.type === "member") {
+      const m = members.find(x => x.id === item.id);
+      if (!m) return null;
+      const c = getMemberConsolidated(m.id);
+      if (item.mode === "consolidated") {
+        return { name: `${m.name} (cons.)`, weights: c.consWeights, value: c.totalValue, stats: c.consStats, color: "#58A6FF" };
+      } else {
+        const ow = getPortfolioWeights(m.portfolioId);
+        return { name: `${m.name} (indiv.)`, weights: ow, value: m.value, stats: pStats(ow, assets, corr), color: "#B392F0" };
+      }
+    }
+    if (item.type === "editor") {
+      return { name: "Editor", weights: nw, value: totalAUM, stats, color: "#F85149" };
+    }
+    return null;
+  };
+
+  const resolved = cmpItems.map(resolveItem).filter(Boolean);
+  const hasValue = resolved.some(r => r.value != null);
+
+  // Target stats
+  const tgtStats = cmpTarget ? pStats(cmpTarget, assets, corr) : null;
+
+  return (
+  <div style={box}>
+    <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600, color: "#F0F6FC" }}>⚖ Comparar</h3>
+
+    {/* Add items */}
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ ...micro, marginBottom: 8 }}>Agregar al comparador</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <button onClick={() => setCmpItems(p => [...p, { type: "editor", id: "editor" }])} style={{ padding: "4px 10px", fontSize: 10, background: "#3D1117", border: "1px solid #F85149", borderRadius: 4, color: "#F85149", cursor: "pointer" }}>+ Editor</button>
+        {saved.map(s => (
+          <button key={s.id} onClick={() => setCmpItems(p => [...p, { type: "portfolio", id: s.id }])} style={{ padding: "4px 10px", fontSize: 10, background: "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", cursor: "pointer" }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: s.color, display: "inline-block", marginRight: 4 }} />{s.name}
+          </button>
+        ))}
+        {members.map(m => (
+          <span key={m.id} style={{ display: "inline-flex", gap: 2 }}>
+            <button onClick={() => setCmpItems(p => [...p, { type: "member", id: m.id, mode: "individual" }])} style={{ padding: "4px 8px", fontSize: 10, background: "#0D1117", border: "1px solid #B392F0", borderRadius: "4px 0 0 4px", color: "#B392F0", cursor: "pointer" }}>{m.name} indiv.</button>
+            <button onClick={() => setCmpItems(p => [...p, { type: "member", id: m.id, mode: "consolidated" }])} style={{ padding: "4px 8px", fontSize: 10, background: "#0D1117", border: "1px solid #58A6FF", borderRadius: "0 4px 4px 0", color: "#58A6FF", cursor: "pointer" }}>cons.</button>
+          </span>
+        ))}
+      </div>
+    </div>
+
+    {/* Active items */}
+    {resolved.length > 0 && (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+          {cmpItems.map((item, idx) => { const r = resolveItem(item); if (!r) return null; return (
+            <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "#0D1117", border: `1px solid ${r.color}`, borderRadius: 4, fontSize: 10, color: r.color }}>
+              {r.name}
+              <button onClick={() => setCmpItems(p => p.filter((_, i) => i !== idx))} style={{ background: "none", border: "none", color: "#F85149", cursor: "pointer", fontSize: 11, padding: 0, marginLeft: 2 }}>×</button>
+            </span>
+          ) })}
+          <button onClick={() => setCmpItems([])} style={{ padding: "3px 8px", fontSize: 9, background: "#21262D", border: "1px solid #30363D", borderRadius: 4, color: "#6E7681", cursor: "pointer" }}>Limpiar</button>
+        </div>
+
+        {/* Stats comparison */}
+        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse", marginBottom: 16 }}>
+          <thead><tr style={{ borderBottom: "2px solid #30363D" }}>
+            <th style={{ textAlign: "left", padding: "6px 4px", ...micro }}>Metric</th>
+            {resolved.map((r, i) => <th key={i} style={{ textAlign: "center", padding: "6px 4px", color: r.color, fontSize: 10, fontFamily: "'JetBrains Mono',monospace" }}>{r.name}</th>)}
+            {tgtStats && <th style={{ textAlign: "center", padding: "6px 4px", color: "#D29922", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" }}>🎯 Target</th>}
+          </tr></thead>
+          <tbody>
+            {[
+              { l: "E[R]", fn: s => `${s.ret.toFixed(1)}%`, c: "#3FB950" },
+              { l: "Vol", fn: s => `${s.vol.toFixed(1)}%`, c: "#D29922" },
+              { l: "VaR 5%", fn: s => `${s.var5.toFixed(1)}%`, c: s => s.var5 < 0 ? "#F85149" : "#3FB950" },
+              { l: "Sharpe", fn: s => ((s.ret - 3.5) / (s.vol + 1e-12)).toFixed(2), c: "#58A6FF" },
+            ].map(row => (
+              <tr key={row.l} style={{ borderBottom: "1px solid #21262D" }}>
+                <td style={{ padding: "5px 4px", fontSize: 10, color: "#6E7681" }}>{row.l}</td>
+                {resolved.map((r, i) => <td key={i} style={{ textAlign: "center", padding: "5px 4px", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, fontWeight: 600, color: typeof row.c === "function" ? row.c(r.stats) : row.c }}>{row.fn(r.stats)}</td>)}
+                {tgtStats && <td style={{ textAlign: "center", padding: "5px 4px", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, fontWeight: 600, color: typeof row.c === "function" ? row.c(tgtStats) : row.c }}>{row.fn(tgtStats)}</td>}
+              </tr>
+            ))}
+            {hasValue && <tr style={{ borderBottom: "1px solid #21262D" }}>
+              <td style={{ padding: "5px 4px", fontSize: 10, color: "#6E7681" }}>Valor</td>
+              {resolved.map((r, i) => <td key={i} style={{ textAlign: "center", padding: "5px 4px", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#8B949E" }}>{r.value != null ? fmt(r.value) : "—"}</td>)}
+              {tgtStats && <td style={{ textAlign: "center", padding: "5px 4px", color: "#484F58" }}>—</td>}
+            </tr>}
+          </tbody>
+        </table>
+
+        {/* Per-asset comparison */}
+        <div style={{ ...micro, marginBottom: 8 }}>Weights por Asset</div>
+        <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+          <thead><tr style={{ borderBottom: "2px solid #30363D" }}>
+            <th style={{ textAlign: "left", padding: "5px 4px", ...micro }}>Asset</th>
+            {resolved.map((r, i) => <th key={i} style={{ textAlign: "center", padding: "5px 4px", color: r.color, fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }}>{r.name}</th>)}
+            {tgtStats && <th style={{ textAlign: "center", padding: "5px 4px", color: "#D29922", fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }}>🎯 Target</th>}
+            {tgtStats && resolved.length > 0 && <th style={{ textAlign: "center", padding: "5px 4px", color: "#F85149", fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }}>Δ vs {resolved[cmpDeltaIdx]?.name || resolved[0]?.name}</th>}
+          </tr></thead>
+          <tbody>
+            {assets.map((ac, ai) => {
+              const anyVisible = resolved.some(r => r.weights[ai] > 0.003) || (cmpTarget && cmpTarget[ai] > 0.003);
+              if (!anyVisible) return null;
+              return (
+                <tr key={ac.id} style={{ borderBottom: "1px solid #21262D" }}>
+                  <td style={{ padding: "4px", display: "flex", alignItems: "center", gap: 4 }}><div style={{ width: 6, height: 6, borderRadius: 2, background: ac.color }} />{ac.name}</td>
+                  {resolved.map((r, i) => {
+                    const pct = r.weights[ai] * 100;
+                    const dv = r.value != null ? r.value * r.weights[ai] : null;
+                    return <td key={i} style={{ textAlign: "center", padding: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
+                      <span style={{ color: "#C9D1D9" }}>{pct.toFixed(1)}%</span>
+                      {dv != null && <div style={{ fontSize: 8, color: "#6E7681" }}>{fmt(Math.round(dv))}</div>}
+                    </td>;
+                  })}
+                  {cmpTarget && <td style={{ textAlign: "center", padding: "4px", fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>{(cmpTarget[ai] * 100).toFixed(1)}%</td>}
+                  {cmpTarget && resolved.length > 0 && (() => {
+                    const base = resolved[cmpDeltaIdx] || resolved[0];
+                    const delta = (cmpTarget[ai] - base.weights[ai]) * 100;
+                    const dv = base.value != null ? delta / 100 * base.value : null;
+                    return <td style={{ textAlign: "center", padding: "4px", fontFamily: "'JetBrains Mono',monospace", color: delta > 0.05 ? "#3FB950" : delta < -0.05 ? "#F85149" : "#484F58" }}>
+                      {delta > 0 ? "+" : ""}{delta.toFixed(1)}%
+                      {dv != null && <div style={{ fontSize: 8 }}>{dv > 0 ? "+" : ""}{fmt(Math.round(dv))}</div>}
+                    </td>;
+                  })()}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        </div>
+
+        {/* Target selector */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #21262D" }}>
+          <div style={{ ...micro, marginBottom: 8 }}>🎯 Target (desde Frontier, Portfolio o Persona)</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            {selPt && <button onClick={() => setCmpTarget(selPt.weights)} style={{ padding: "4px 10px", fontSize: 10, background: "#2D2200", border: "1px solid #D29922", borderRadius: 4, color: "#D29922", cursor: "pointer" }}>Frontier seleccionado (Ret:{selPt.ret.toFixed(1)}% Vol:{selPt.vol.toFixed(1)}%)</button>}
+            <button onClick={() => setCmpTarget(nw)} style={{ padding: "4px 10px", fontSize: 10, background: "#3D1117", border: "1px solid #F85149", borderRadius: 4, color: "#F85149", cursor: "pointer" }}>Editor actual</button>
+            {saved.map(s => (
+              <button key={s.id} onClick={() => setCmpTarget(s.weights.map(w => w / 100))} style={{ padding: "4px 10px", fontSize: 10, background: "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: "#C9D1D9", cursor: "pointer" }}>{s.name}</button>
+            ))}
+            {members.filter(m => m.portfolioId).map(m => {
+              const c = getMemberConsolidated(m.id);
+              return (
+                <span key={m.id} style={{ display: "inline-flex", gap: 2 }}>
+                  <button onClick={() => setCmpTarget(getPortfolioWeights(m.portfolioId))} style={{ padding: "4px 8px", fontSize: 10, background: "#0D1117", border: "1px solid #B392F0", borderRadius: "4px 0 0 4px", color: "#B392F0", cursor: "pointer" }}>{m.name} indiv.</button>
+                  <button onClick={() => setCmpTarget(c.consWeights)} style={{ padding: "4px 8px", fontSize: 10, background: "#0D1117", border: "1px solid #58A6FF", borderRadius: "0 4px 4px 0", color: "#58A6FF", cursor: "pointer" }}>cons.</button>
+                </span>
+              );
+            })}
+            {cmpTarget && <button onClick={() => setCmpTarget(null)} style={{ padding: "4px 10px", fontSize: 10, background: "#21262D", border: "1px solid #30363D", borderRadius: 4, color: "#6E7681", cursor: "pointer" }}>Quitar target</button>}
+          </div>
+          {tgtStats && <div style={{ marginTop: 4, fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#D29922" }}>
+            Target: E[R]:{tgtStats.ret.toFixed(1)}% | Vol:{tgtStats.vol.toFixed(1)}% | Sharpe:{((tgtStats.ret - 3.5) / (tgtStats.vol + 1e-12)).toFixed(2)}
+          </div>}
+          {/* Delta base selector */}
+          {tgtStats && resolved.length > 1 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ ...micro, marginBottom: 6 }}>Δ calcular contra:</div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {resolved.map((r, i) => (
+                  <button key={i} onClick={() => setCmpDeltaIdx(i)} style={{ padding: "3px 8px", fontSize: 10, background: cmpDeltaIdx === i ? "#0D2240" : "#0D1117", border: `1px solid ${cmpDeltaIdx === i ? r.color : "#21262D"}`, borderRadius: 4, color: cmpDeltaIdx === i ? r.color : "#6E7681", cursor: "pointer", fontWeight: cmpDeltaIdx === i ? 600 : 400 }}>{r.name}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {resolved.length === 0 && <p style={{ fontSize: 11, color: "#484F58" }}>Agregá portfolios o personas para comparar. Podés elegir un target desde la Frontier.</p>}
+  </div>
+  );
+})()}
 
 {/* ═══ LEVERAGE ═══ */}
 {tab === "leverage" && (
