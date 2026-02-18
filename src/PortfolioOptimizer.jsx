@@ -120,7 +120,7 @@ function genFrontier(assets, corr, cnt, cst) {
   // 3) Random portfolios with varying concentration
   for (let k = 0; k < cnt; k++) {
     let w;
-    const alpha = k < cnt * 0.3 ? 0.1 : k < cnt * 0.6 ? 0.5 : 1.0;
+    const alpha = k < cnt * 0.2 ? 0.05 : k < cnt * 0.4 ? 0.1 : k < cnt * 0.65 ? 0.5 : 1.0;
     if (active && fixedIdx.length > 0) {
       const raw = freeIdx.map(() => Math.pow(Math.random(), 1 / alpha)), rs = raw.reduce((a, b) => a + b, 0);
       const ft = Math.max(0, (100 - fixedSum)) / 100;
@@ -135,9 +135,24 @@ function genFrontier(assets, corr, cnt, cst) {
     tryAdd(w);
   }
 
+  // Build frontier: true Pareto — a point is on the frontier if no other point
+  // has both lower vol AND higher return
+  // Step 1: sort all points by vol ascending
+  const sorted = [...pts].sort((a, b) => a.vol - b.vol);
+
+  // Step 2: sweep from left, track running max return — any point that sets a new max is on the frontier
+  let maxRet = -Infinity;
+  const pareto = [];
+  for (const p of sorted) {
+    if (p.ret > maxRet) { maxRet = p.ret; pareto.push(p); }
+  }
+
+  // Step 3: bucket the Pareto points into fine 0.25% vol intervals for a smooth line
   const bk = {};
-  for (const p of pts) { const b = Math.round(p.vol * 2) / 2; if (!bk[b] || p.ret > bk[b].ret) bk[b] = p; }
-  return { points: pts, frontier: Object.values(bk).sort((a, b) => a.vol - b.vol) };
+  for (const p of pareto) { const b = Math.round(p.vol * 4) / 4; if (!bk[b] || p.ret > bk[b].ret) bk[b] = p; }
+  const frontier = Object.values(bk).sort((a, b) => a.vol - b.vol);
+
+  return { points: pts, frontier };
 }
 
 function calcERC(assets, corr, excl) {
@@ -242,6 +257,8 @@ function AppInner() {
   ]);
   const [activeMemberId, setActiveMemberId] = useState("padre");
   const [fShow, setFShow] = useState({ editor: true, assets: true, saved: true, members: true, familia: true });
+  const [fShowSaved, setFShowSaved] = useState({}); // { portfolioId: true/false } — default true if not set
+  const [fShowMembers, setFShowMembers] = useState({}); // { memberId: true/false } — default true if not set
   const [dbReady, setDbReady] = useState(false);
   const [savedCst, setSavedCst] = useState([]);
   const [cstName, setCstName] = useState("");
@@ -362,7 +379,7 @@ function AppInner() {
   const ercW = useMemo(() => calcERC(assets, corr, ercExcl), [assets, corr, ercExcl]);
   const ercStats = useMemo(() => pStats(ercW, assets, corr), [ercW, assets, corr]);
   const fCst = useMemo(() => cstOn ? { locked, maxIlliquid: maxIll, active: true } : { active: false }, [cstOn, locked, maxIll]);
-  const frontier = useMemo(() => showF ? genFrontier(assets, corr, cstOn ? 20000 : 10000, fCst) : null, [showF, assets, corr, fCst, cstOn]);
+  const frontier = useMemo(() => showF ? genFrontier(assets, corr, cstOn ? 35000 : 15000, fCst) : null, [showF, assets, corr, fCst, cstOn]);
   const illPct = useMemo(() => assets.reduce((s, a, i) => s + (a.liquid ? 0 : nw[i] * 100), 0), [assets, nw]);
   const liqPct = 100 - illPct;
 
@@ -890,13 +907,16 @@ function AppInner() {
 
 {/* ═══ FRONTIER ═══ */}
 {tab === "frontier" && (() => {
+  const isSavedVisible = (id) => fShow.saved && (fShowSaved[id] !== false);
+  const isMemberVisible = (id) => fShow.members && (fShowMembers[id] !== false);
+
   // Dynamic axes based on all visible points
   const allPts = [];
   if (frontier) frontier.points.forEach(p => allPts.push(p));
   if (fShow.editor) allPts.push({ vol: stats.vol, ret: stats.ret });
   if (fShow.assets) assets.forEach(a => allPts.push({ vol: a.annualizedVol, ret: a.expectedReturn }));
-  if (fShow.saved) savedStats.forEach(s => allPts.push({ vol: s.vol, ret: s.ret }));
-  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => allPts.push({ vol: m.consStats.vol, ret: m.consStats.ret }));
+  if (fShow.saved) savedStats.filter(s => isSavedVisible(s.id)).forEach(s => allPts.push({ vol: s.vol, ret: s.ret }));
+  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId && isMemberVisible(m.id)).forEach(m => allPts.push({ vol: m.consStats.vol, ret: m.consStats.ret }));
   if (fShow.familia && familySummary.aggVal > 0) allPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret });
 
   const pad = 0.5;
@@ -919,8 +939,8 @@ function AppInner() {
   // Collect labeled points for offset calculation (only visible ones)
   const labeledPts = [];
   if (fShow.editor) labeledPts.push({ vol: stats.vol, ret: stats.ret, name: "Editor", color: "#F85149" });
-  if (fShow.saved) savedStats.forEach(s => labeledPts.push({ vol: s.vol, ret: s.ret, name: s.name, color: s.color }));
-  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).forEach(m => labeledPts.push({ vol: m.consStats.vol, ret: m.consStats.ret, name: m.name, color: "#58A6FF" }));
+  if (fShow.saved) savedStats.filter(s => isSavedVisible(s.id)).forEach(s => labeledPts.push({ vol: s.vol, ret: s.ret, name: s.name, color: s.color }));
+  if (fShow.members) familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId && isMemberVisible(m.id)).forEach(m => labeledPts.push({ vol: m.consStats.vol, ret: m.consStats.ret, name: m.name, color: "#58A6FF" }));
   if (fShow.familia && familySummary.aggVal > 0) labeledPts.push({ vol: familySummary.aggStats.vol, ret: familySummary.aggStats.ret, name: "Familia", color: "#C9D1D9" });
 
   const offsets = labeledPts.map((p, i) => {
@@ -969,6 +989,23 @@ function AppInner() {
         {chk("familia", "Familia", "#C9D1D9")}
       </div>
     </div>
+    {/* Per-item selectors */}
+    {fShow.saved && saved.length > 1 && (
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+        <span style={{ fontSize: 9, color: "#484F58", lineHeight: "22px" }}>Portfolios:</span>
+        {saved.map(s => (<label key={s.id} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: isSavedVisible(s.id) ? s.color : "#484F58", cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={isSavedVisible(s.id)} onChange={() => setFShowSaved(p => ({ ...p, [s.id]: !(p[s.id] !== false) }))} style={{ accentColor: s.color, width: 10, height: 10 }} />{s.name}
+        </label>))}
+      </div>
+    )}
+    {fShow.members && familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).length > 1 && (
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+        <span style={{ fontSize: 9, color: "#484F58", lineHeight: "22px" }}>Miembros:</span>
+        {familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map(m => (<label key={m.id} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: isMemberVisible(m.id) ? "#58A6FF" : "#484F58", cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={isMemberVisible(m.id)} onChange={() => setFShowMembers(p => ({ ...p, [m.id]: !(p[m.id] !== false) }))} style={{ accentColor: "#58A6FF", width: 10, height: 10 }} />{m.name}
+        </label>))}
+      </div>
+    )}
     {/* Constraint selector in Frontier */}
     {savedCst.length > 0 && (
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
@@ -1012,14 +1049,14 @@ function AppInner() {
         {/* Individual assets */}
         {fShow.assets && assets.map(ac => { if (!inView(ac.annualizedVol, ac.expectedReturn)) return null; const x = toSvgX(ac.annualizedVol); const y = toSvgY(ac.expectedReturn); return <g key={ac.id}><circle cx={x} cy={y} r="4" fill={ac.color} opacity=".6" stroke={ac.color} strokeWidth=".5" /><text x={x + 7} y={y + 3} fill={ac.color} fontSize="7" fontFamily="JetBrains Mono" opacity=".8">{ac.name}</text></g> })}
         {/* Saved portfolios */}
-        {fShow.saved && savedStats.map(s => { if (!inView(s.vol, s.ret)) return null; const x = toSvgX(s.vol); const y = toSvgY(s.ret); return <g key={s.id}><circle cx={x} cy={y} r="6" fill={s.color} stroke="#F0F6FC" strokeWidth="1.5" /><text x={x + 10} y={y + 3} fill={s.color} fontSize="8" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> })}
+        {fShow.saved && savedStats.filter(s => isSavedVisible(s.id)).map(s => { if (!inView(s.vol, s.ret)) return null; const x = toSvgX(s.vol); const y = toSvgY(s.ret); return <g key={s.id}><circle cx={x} cy={y} r="6" fill={s.color} stroke="#F0F6FC" strokeWidth="1.5" /><text x={x + 10} y={y + 3} fill={s.color} fontSize="8" fontWeight="600" fontFamily="JetBrains Mono">{s.name}</text></g> })}
         {/* Editor (current) */}
         {fShow.editor && inView(stats.vol, stats.ret) && (() => { const o = nextOi(); return <g>
           <circle cx={toSvgX(stats.vol)} cy={toSvgY(stats.ret)} r="8" fill="#F85149" stroke="#F0F6FC" strokeWidth="2" />
           <text x={toSvgX(stats.vol) + o.ox} y={toSvgY(stats.ret) + o.oy} fill="#F85149" fontSize="9" fontWeight="600" fontFamily="JetBrains Mono">Editor</text>
         </g> })()}
         {/* Family members */}
-        {fShow.members && familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId).map((m, mi) => {
+        {fShow.members && familySummary.members.filter(m => m.totalValue > 0 && m.portfolioId && isMemberVisible(m.id)).map((m, mi) => {
           if (!inView(m.consStats.vol, m.consStats.ret)) return null;
           const x = toSvgX(m.consStats.vol); const y = toSvgY(m.consStats.ret);
           const o = nextOi();
