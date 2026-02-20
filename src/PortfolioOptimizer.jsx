@@ -117,11 +117,46 @@ function genFrontier(assets, corr, cnt, cst) {
     }
   }
 
-  // 3) Random portfolios with varying concentration
+  // 3) Random portfolios — constraint-aware generation
+  // Compute floor allocations from min/range constraints
+  const floors = Array(n).fill(0);
+  const caps = Array(n).fill(100);
+  if (active && locked) {
+    for (const k of lk) {
+      const c = locked[k]; if (!c) continue;
+      if (c.type === 'fixed') { floors[k] = c.val || 0; caps[k] = c.val || 0; }
+      if (c.type === 'min') floors[k] = c.min || 0;
+      if (c.type === 'max') caps[k] = c.max ?? 100;
+      if (c.type === 'range') { floors[k] = c.min || 0; caps[k] = c.max ?? 100; }
+    }
+  }
+  const floorSum = floors.reduce((s, v) => s + v, 0);
+  const hasFloors = floorSum > 0.01;
+
   for (let k = 0; k < cnt; k++) {
     let w;
     const alpha = k < cnt * 0.2 ? 0.05 : k < cnt * 0.4 ? 0.1 : k < cnt * 0.65 ? 0.5 : 1.0;
-    if (active && fixedIdx.length > 0) {
+
+    if (hasFloors) {
+      // Start from floor allocations, distribute remaining budget randomly
+      w = floors.map(f => f / 100);
+      const remaining = Math.max(0, 1 - floorSum / 100);
+      if (remaining > 0.001) {
+        // Only distribute to non-fixed assets that have room (below cap)
+        const eligible = Array.from({ length: n }, (_, i) => i).filter(i => !fixedIdx.includes(i) && caps[i] > floors[i] + 0.01);
+        if (eligible.length > 0) {
+          const raw = eligible.map(() => Math.pow(Math.random(), 1 / alpha));
+          const rs = raw.reduce((a, b) => a + b, 0);
+          eligible.forEach((ei, ri) => {
+            const room = (caps[ei] - floors[ei]) / 100;
+            w[ei] += Math.min(room, (raw[ri] / rs) * remaining);
+          });
+          // Normalize to sum to 1
+          const s = w.reduce((a, b) => a + b, 0);
+          if (s > 0.001) w = w.map(x => x / s);
+        }
+      }
+    } else if (active && fixedIdx.length > 0) {
       const raw = freeIdx.map(() => Math.pow(Math.random(), 1 / alpha)), rs = raw.reduce((a, b) => a + b, 0);
       const ft = Math.max(0, (100 - fixedSum)) / 100;
       w = Array(n).fill(0);
